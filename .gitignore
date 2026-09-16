@@ -1,0 +1,13 @@
+# virtual environment
+.venv/
+venv/
+# processed-data cache (rebuilt on first run)
+cache/
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+# scratch
+out/
+*.pkl
+.streamlit/secrets.toml
