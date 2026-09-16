@@ -1,0 +1,37 @@
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f3f3f0"
+textColor = "#0b0b0b"
+borderColor = "#e1e0d9"
+baseRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+linkUnderline = false
+baseFontSize = 18
+headingFontSizes = ["2.4rem", "1.9rem", "1.45rem", "1.2rem", "1.05rem", "1rem"]
+headingFontWeights = [600, 600, 600, 500, 500, 500]
+
+redColor = "#d03b3b"
+orangeColor = "#eb6834"
+yellowColor = "#eda100"
+greenColor = "#0ca30c"
+blueColor = "#2a78d6"
+violetColor = "#4a3aa7"
+grayColor = "#52514e"
+
+dataframeHeaderBackgroundColor = "#f3f3f0"
+dataframeBorderColor = "#e1e0d9"
+
+# categorical order from the validated reference palette (fixed order, never cycled)
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#eda100", "#e87ba4", "#008300", "#e34948"]
+chartSequentialColors = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#1c5cab", "#0d366b"]
+
+
+[server]
+headless = true
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
