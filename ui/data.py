@@ -65,6 +65,12 @@ def period_stats(well: str, start: str, end: str, k_mode: str, steady_only: bool
 
 
 @st.cache_resource
+def mape_by_well() -> pd.DataFrame:
+    """Per-well MAPE/MdAPE indexed by (well, method)."""
+    return get_results().mape.set_index(["scope", "method"])
+
+
+@st.cache_resource
 def gas_by_well() -> pd.DataFrame:
     """Per-well intake-vs-bubble-point summary, indexed by well."""
     return get_results().gas.set_index("WELL_NAME")

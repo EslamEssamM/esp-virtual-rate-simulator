@@ -83,8 +83,41 @@ def intake_tile(stats: dict, gas: pd.Series | None):
                       f"fraction is {C.GVF_CAVEAT} and is indicative, not quantitative."))
 
 
+# Each K mode has one honest out-of-sample validation method. A single K is scored leave-one-out
+# (M1). An interpolated K cannot be scored that way: interpolating across a test needs the test
+# that follows it, which does not exist in real time, so the walk-forward K of the previous test
+# (M2) is what an interpolated K actually gives you at prediction time.
+K_MODE_METHOD = {"single": "M1_LOO", "interp": "M2_WALK"}
+K_MODE_METHOD_WC = {"single": "M6_LOO", "interp": "M6_WALK"}
+K_MODE_TILE = {"single": "MAPE, K single %", "interp": "MAPE, K interp. %"}
+
+
+def mape_tile(mape_rows: pd.DataFrame | None, well: str, mode: str, wc_correction: bool, active: bool):
+    """Model error for one K mode: mean absolute % error at this well's matched tests."""
+    method = (K_MODE_METHOD_WC if wc_correction else K_MODE_METHOD)[mode]
+    label = K_MODE_TILE[mode] + (" *" if active else "")
+    row = None
+    if mape_rows is not None and (well, method) in mape_rows.index:
+        row = mape_rows.loc[(well, method)]
+    if row is None or not pd.notna(row["MAPE_excl_suspect"]):
+        st.metric(label, "n/a", border=True, help="Not enough matched tests on this well to score this K mode.")
+        return
+    how = ("leave-one-out: K from the well's other non-suspect tests" if mode == "single" else
+           "walk-forward: K from the most recent earlier non-suspect test, which is what an "
+           "interpolated K gives you before the next test exists")
+    st.metric(label, fmt_num(row["MAPE_excl_suspect"], 1),
+              f"{row['MAPE_all']:.1f} % over all {int(row['n_all'])} tests", delta_color="off", delta_arrow="off",
+              border=True,
+              help=(f"Mean absolute % error against this well's matched well tests, {how}"
+                    f"{' , with the B_liq water-cut correction' if wc_correction else ''}. "
+                    f"The value excludes suspect tests ({int(row['n_excl_suspect'])} tests, median "
+                    f"{row['MdAPE_excl_suspect']:.1f} %); the line underneath includes them. "
+                    "An asterisk marks the K mode the sidebar is using."))
+
+
 def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_mode: str, run_label_now: str,
-              wc_correction: bool = False, gas: pd.Series | None = None):
+              wc_correction: bool = False, gas: pd.Series | None = None,
+              mape_rows: pd.DataFrame | None = None, well: str = ""):
     """KPI tiles for one well over the selected period."""
     med = stats["rate_median"]
     last_rate = stats["rate_last"]
@@ -92,7 +125,7 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
     k_label = ("K_dh interpolated" if k_mode == "interp" else "K_dh single") if wc_correction \
         else ("K interpolated" if k_mode == "interp" else "K single")
     k_value = stats["K_dh"] if wc_correction else stats["K"]
-    n = 10 if wc_correction else 9
+    n = 12 if wc_correction else 11
     # four tiles per row: any more and the labels ellipsize on a laptop screen
     c = []
     for start in range(0, n, 4):
@@ -123,24 +156,28 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
         else:
             st.metric("Last test error, %", "n/a", border=True)
     with c[4]:
+        mape_tile(mape_rows, well, "single", wc_correction, k_mode == "single")
+    with c[5]:
+        mape_tile(mape_rows, well, "interp", wc_correction, k_mode == "interp")
+    with c[6]:
         phi = stats["phi_last"]
         st.metric("PHI (last)", fmt_num(phi, 3), (f"{(phi - 1) * 100:+.1f} % vs calib." if pd.notna(phi) else None),
                   delta_color="off", border=True, help=PHI_HELP)
-    with c[5]:
-        st.metric("Data quality, %", fmt_num(stats["quality_pct"], 0), border=True,
-                  help="Usable rows / all rows in the period (no missing V/I/PIP/PDP, pump on, dP > 300 psi, pressures and Hz in range).")
-    with c[6]:
-        st.metric("Uptime, %", fmt_num(stats["uptime_pct"], 0), border=True,
-                  help="Rows not flagged pump_off (V >= 100 V, I >= 5 A, Hz != 0) / all rows in the period.")
     with c[7]:
         intake_tile(stats, gas)
     with c[8]:
+        st.metric("Data quality, %", fmt_num(stats["quality_pct"], 0), border=True,
+                  help="Usable rows / all rows in the period (no missing V/I/PIP/PDP, pump on, dP > 300 psi, pressures and Hz in range).")
+    with c[9]:
+        st.metric("Uptime, %", fmt_num(stats["uptime_pct"], 0), border=True,
+                  help="Rows not flagged pump_off (V >= 100 V, I >= 5 A, Hz != 0) / all rows in the period.")
+    with c[10]:
         st.metric("Metered liquid, bbl", fmt_num(stats["cum_bbl"], 0), f"{stats['rate_coverage_pct']:.0f} % of hours",
                   delta_color="off", delta_arrow="off", border=True,
                   help="Sum of hourly median virtual rate x 1 h over hours that have a valid steady rate. Hours without a rate "
                        "contribute nothing, so this is metered liquid, not calendar production.")
     if wc_correction:
-        with c[9]:
+        with c[11]:
             eff = stats.get("wc_effect_pct")
             st.metric("WC correction now, %", (f"{eff:+.1f}" if pd.notna(eff) else "n/a"),
                       f"B_liq {stats['med_B_LIQ']:.3f} at WC {stats['med_WC_FRAC'] * 100:.0f} %"

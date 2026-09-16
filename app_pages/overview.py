@@ -52,7 +52,8 @@ for well in f["wells"]:
         gas = D.gas_by_well()
         kpi_tiles(stats, cal.loc[well] if well in cal.index else None,
                   last_tests.loc[well] if well in last_tests.index else None, f["k_mode"], run_now,
-                  f["wc_correction"], gas.loc[well] if well in gas.index else None)
+                  f["wc_correction"], gas.loc[well] if well in gas.index else None,
+                  D.mape_by_well(), well)
         series = D.rate_series(well, f["start"], f["end"], f["freq"], f["steady_only"])
         tests = D.tests_in_range(well, f["start"], f["end"])
         st.plotly_chart(rate_chart(well, series, tests, f["freq"], f["steady_only"], f["k_mode"], shade, zoom=zoom),
