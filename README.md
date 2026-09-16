@@ -64,6 +64,32 @@ Two K variants are exposed: `K_single` (median K of the well's non-suspect match
 `K_interp` (linear in time between non-suspect tests, flat outside). Suspect tests are those
 whose K has a robust z-score above 3.5 within the well.
 
+## Deploy to Streamlit Community Cloud
+
+The repository root is the app root, so Community Cloud needs no extra configuration:
+`app.py`, `requirements.txt` and `.streamlit/config.toml` are all at the top level, and the
+input files are committed under `data/`.
+
+1. Sign in at [share.streamlit.io](https://share.streamlit.io) with the GitHub account that owns
+   this repository. A **private** repository requires granting Streamlit read access to private
+   repositories when it asks; the free tier allows one private app.
+2. **Create app** -> **Deploy a public app from GitHub** (the same flow serves private repos once
+   access is granted), then set:
+   - Repository: `<owner>/esp-virtual-rate-simulator`
+   - Branch: `main`
+   - Main file path: `app.py`
+   - Advanced settings -> Python version: **3.11**
+3. Deploy. The first load reads the Excel file and writes the parquet cache, which takes about
+   5 seconds; later loads come from that cache.
+
+Notes:
+- `requirements.txt` is pinned to the versions the test suite runs against, so the deployed app
+  reproduces the K values and the MAPE table in this README exactly.
+- `cache/` is gitignored and rebuilt on the container at first run. Community Cloud containers are
+  ephemeral, so the cache is rebuilt after every restart.
+- `requirements-dev.txt` (Playwright, for screenshots) is not installed on the cloud.
+- The app holds no secrets and needs no environment variables.
+
 ## Well scope
 
 `core/config.py` holds the whole well scope:

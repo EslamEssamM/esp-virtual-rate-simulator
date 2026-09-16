@@ -1,7 +1,9 @@
-pandas>=2.2
-numpy>=1.26
-plotly>=5.22
-streamlit>=1.57
-openpyxl>=3.1
-pyarrow>=16
-pytest>=8
+# Pinned to the versions the test suite runs against, so a cloud deploy reproduces
+# the numbers in the README exactly. Dev-only extras live in requirements-dev.txt.
+pandas==3.0.5
+numpy==2.4.6
+plotly==7.1.0
+streamlit==1.64.0
+openpyxl==3.1.5
+pyarrow==25.0.1
+pytest==9.1.1
