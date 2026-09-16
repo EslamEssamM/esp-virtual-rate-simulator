@@ -94,7 +94,8 @@ def test_mapping_window_and_fallback():
 def test_validation_methods():
     ts = pd.date_range("2025-01-01", periods=3, freq="60D")
     mm = pd.DataFrame(dict(WELL_NAME="W1", TEST_TS=ts, Q_LIQ=[1000.0, 1100.0, 1200.0],
-                           RT_X=[100.0, 100.0, 100.0], K=[10.0, 11.0, 12.0], suspect=False))
+                           RT_X=[100.0, 100.0, 100.0], K=[10.0, 11.0, 12.0], suspect=False,
+                           B_LIQ=[1.05, 1.05, 1.05], K_dh=[10.5, 11.55, 12.6]))
     tests = mm[["WELL_NAME", "TEST_TS", "Q_LIQ"]].copy()
     v = validation.validate(mm, tests)
     assert np.isnan(v.loc[0, "Q_M2_WALK"]) and np.isnan(v.loc[0, "Q_BASE_LAST_TEST"])
@@ -103,7 +104,8 @@ def test_validation_methods():
     assert v.loc[1, "Q_M1_LOO"] == pytest.approx(11.0 * 100)        # median(10, 12) x 100
     assert v.loc[1, "APE_M1_LOO"] == pytest.approx(0.0)
     s = validation.mape_summary(v)
-    assert set(s["method"]) == {"M1_LOO", "M2_WALK", "BASE_LAST_TEST"}
+    assert set(s["method"]) == set(validation.METHODS)
+    assert {"M1_LOO", "M2_WALK", "BASE_LAST_TEST"} <= set(s["method"])
 
 
 def test_runs_helper():
@@ -152,3 +154,45 @@ def test_k_interp_mixed_time_units():
                           K=[10.0, 20.0], suspect=[False, False]))
     t = pd.Series(pd.to_datetime(["2025-01-06"]).astype("datetime64[ns]"))
     assert calibration.k_interp(t, c).tolist() == pytest.approx([15.0])
+
+
+# --------------------------------------------------------------------------- PVT unit tests
+
+def test_b_liq_and_interpolation():
+    from core import pvt
+    assert pvt.b_liq(0.8, 1.15) == pytest.approx(0.8 * 1.020 + 0.2 * 1.15)
+    tp = pd.DataFrame(dict(WELL_NAME="W1", TEST_TS=pd.to_datetime(["2025-01-01", "2025-01-11"]),
+                           WC_FRAC=[0.5, 0.7], BO=[1.10, 1.10], B_LIQ=[1.06, 1.044], RS_TEST=[300.0, 280.0]))
+    ts = pd.Series(pd.to_datetime(["2024-12-01", "2025-01-06", "2025-02-01"]))
+    out = pvt.interpolate_pvt(tp, "W1", ts)
+    assert out["WC_FRAC"].tolist() == pytest.approx([0.5, 0.6, 0.7])      # flat outside, linear inside
+    assert out["B_LIQ"].tolist() == pytest.approx([1.06, 1.052, 1.044])
+    assert pvt.interpolate_pvt(tp, "OTHER", ts)["B_LIQ"].isna().all()
+
+
+def test_free_gas_indicator_signs():
+    from core import pvt
+    lab = dict(PB=1770.0, RS=450.0, API=27.1, RESERVOIR_TEMP=173)
+    pip = np.array([2500.0, 1770.0, 400.0])
+    dpb, free, gvf = pvt.free_gas_indicator(lab, pip, np.full(3, 0.6), np.full(3, 1.07))
+    assert dpb.tolist() == pytest.approx([730.0, 0.0, -1370.0])
+    assert free[0] == 0 and free[1] == 0 and free[2] > 0      # gas only below the bubble point
+    assert gvf[0] == 0 and gvf[2] > 0.3
+
+
+def test_gas_severity_bands():
+    from core.pvt import gas_severity
+    assert gas_severity(100) == "ok"
+    assert gas_severity(-100) == "watch"
+    assert gas_severity(-1337) == "gassy"
+    assert gas_severity(float("nan")) == "unknown"
+
+
+def test_gas_at_intake_rule():
+    days = pd.date_range("2025-01-01", periods=60, freq="D")
+    daily = pd.DataFrame(dict(day=days, WELL_NAME="W1", PIP_minus_Pb=-50.0, gvf_est=0.01, Pb=1500.0))
+    assert diagnosis.gas_at_intake(daily) == []              # within the 300 psi margin
+    daily["PIP_minus_Pb"] = -1300.0
+    daily["gvf_est"] = 0.48
+    ev = diagnosis.gas_at_intake(daily)
+    assert len(ev) == 1 and ev[0]["severity"] == "info" and ev[0]["type"] == "GAS_AT_INTAKE"

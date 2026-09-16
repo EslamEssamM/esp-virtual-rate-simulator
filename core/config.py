@@ -102,3 +102,21 @@ VOLT_STEP_PCT = 10            # 10-30 % daily-median change -> VOLTAGE_STEP (inf
 PHI_HELP = ("Ratio of dP/(sqrt(3)*V*I) to its value at calibration. It moves when the operating point "
             "changes as well as when the pump degrades. PHI ~ 1 means nothing has changed since "
             "calibration; a sustained drift means recalibrate or investigate.")
+
+# --- PVT / water cut (spec addendum A and B) ---------------------------------
+PVT_FILE = DATA_DIR / "pvtdetails_4wells.csv"   # per-well lab PVT: Pb, Rs, Bo, viscosity, API, T
+BW = 1.020                 # water formation volume factor, rb/stb (implied by ESP_MASTER_DATASET)
+WATER_SG = 1.0958          # Mauddud formation water, 137,779 ppm
+GAS_GRAVITY = 0.80         # ASSUMED: not present in any input file -> GVF is indicative only
+Z_FACTOR = 0.9             # assumed gas compressibility for the intake Bg
+GVF_CAVEAT = "estimated (gas gravity assumed 0.80)"
+
+# GAS_AT_INTAKE event and the intake severity bands
+GAS_AT_INTAKE_MARGIN = 300     # psi below Pb before the intake counts as gassy
+GAS_ROLL_DAYS = 30             # rolling window on the daily PIP for the event
+
+WC_CORRECTION_HELP = (
+    "Divides the pump-condition rate by the liquid formation volume factor B_liq(WC, Bo) so K no "
+    "longer carries a hidden water-cut dependence. Physically consistent; on this dataset the "
+    "effect is within +/-2% because water cut only moves 55-83% in the SCADA period."
+)

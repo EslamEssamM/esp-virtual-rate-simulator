@@ -24,6 +24,7 @@ from .calibration import calibrate, pip_baselines
 from .diagnosis import detect_events
 from .load import load_esp_master, load_rt, load_tests, pump_runs, run_label
 from .mapping import map_tests
+from .pvt import gas_summary, load_lab_pvt, load_test_pvt
 from .quality import add_quality_flags, filter_summary, monthly_flag_counts
 from .validation import mape_summary, mape_table, scope_comparison, validate
 from .virtual_rate import compute_virtual_rate, daily_series, resample_rates
@@ -39,6 +40,8 @@ class Results:
     filter_summary: pd.DataFrame     # per-well flag counts (all wells, with an `excluded` column)
     monthly_flags: pd.DataFrame      # long table for the stacked bar (all wells)
     excluded: pd.DataFrame           # excluded wells with the verbatim reason
+    lab_pvt: pd.DataFrame            # per-well lab PVT (Pb, Rs, Bo, viscosity, API, T)
+    test_pvt: pd.DataFrame           # per-test water cut, Bo and B_liq
 
     # --- analysed wells only ---
     mapped: pd.DataFrame             # tests + SCADA medians + MATCH status
@@ -52,6 +55,7 @@ class Results:
     hourly: pd.DataFrame             # hourly medians (steady rows)
     events: pd.DataFrame             # diagnosis event table
     pip_baselines: pd.DataFrame      # per (well, run) LOW_PIP_TREND baseline
+    gas: pd.DataFrame                # per-well intake vs bubble point and estimated GVF
     meta: dict = field(default_factory=dict)
 
     @property
@@ -121,7 +125,7 @@ def excluded_table(d: pd.DataFrame, tests: pd.DataFrame, runs: pd.DataFrame,
 
 
 def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE, esp_file: Path = C.ESP_MASTER_FILE,
-                 cache_dir: Path = C.CACHE_DIR, force: bool = False) -> Results:
+                 pvt_file: Path = C.PVT_FILE, cache_dir: Path = C.CACHE_DIR, force: bool = False) -> Results:
     # ---------------------------------------------------------------- load (every well)
     d, meta = load_flagged_rt(rt_file, cache_dir, force)
     tests = load_tests(wt_file)
@@ -130,6 +134,10 @@ def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE, esp_file:
     tests = tests.merge(esp[["WELL_NAME", "TEST_TS", "run", "DAYS_FROM_INSTALLATION"]],
                         on=["WELL_NAME", "TEST_TS"], how="left")
     tests["run"] = tests["run"].fillna("current")
+    # PVT: per-test water cut / Bo / B_liq, and the per-well lab model (Pb, Rs, API, T)
+    lab_pvt = load_lab_pvt(pvt_file)
+    test_pvt = load_test_pvt(esp_file)
+    tests = tests.merge(test_pvt, on=["WELL_NAME", "TEST_TS"], how="left")
     d["run"] = run_label(d["TIME_STAMP"], d["WELL_NAME"], runs)
     d["excluded"] = d["WELL_NAME"].isin(C.EXCLUDED_WELLS)
     tests["excluded"] = tests["WELL_NAME"].isin(C.EXCLUDED_WELLS)
@@ -155,7 +163,7 @@ def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE, esp_file:
         mapped, mm, cal, v = keep(mapped), keep(mm), keep(cal), keep(v)
 
     # ---------------------------------------------------------------- rates, events
-    d = compute_virtual_rate(d, mm, cal)          # excluded wells get no K, so no rate
+    d = compute_virtual_rate(d, mm, cal, test_pvt, lab_pvt)   # excluded wells get no K, so no rate
     d_an = d[d["WELL_NAME"].isin(analysed)]
     daily = daily_series(d_an)
     hourly = resample_rates(d_an, "h", steady_only=True)
@@ -176,6 +184,7 @@ def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE, esp_file:
         rt=d, tests=tests, esp=esp, runs=runs,
         filter_summary=fs, monthly_flags=monthly_flag_counts(d),
         excluded=excluded_table(d, tests, runs, thin),
+        lab_pvt=lab_pvt, test_pvt=test_pvt, gas=gas_summary(d_an, lab_pvt),
         mapped=mapped, matched=mm, cal=cal, validation=v,
         mape=mape_table(v), mape_overall=mape_summary(v),
         sensitivity=scope_comparison(v, v_all, len(analysed), len(meta["wells_all"])),
@@ -193,6 +202,8 @@ def results_summary(res: Results) -> str:
     lines = ["== excluded wells ==", res.excluded[["WELL_NAME", "excluded_by", "scada_rows", "well_tests", "pump"]].to_string(index=False),
              "", "== filter summary (all loaded wells) ==", res.filter_summary.to_string(index=False),
              "", "== calibration ==", _round(res.cal, 3).to_string(index=False),
+             "", "== K vs K_dh ==",
+             _round(res.cal[["WELL_NAME", "K_single", "K_cv_pct", "K_dh_single", "K_dh_cv_pct", "WC_min", "WC_max", "B_LIQ_min", "B_LIQ_max"]], 3).to_string(index=False),
              "", "== matched tests ==",
              _round(res.matched[["WELL_NAME", "TEST_TS", "Q_LIQ", "RT_X", "K", "PIP_diff_vs_test", "robust_z", "suspect"]], 3).to_string(index=False),
              "", "== validation ==", _round(res.validation, 1).to_string(index=False),
@@ -200,6 +211,7 @@ def results_summary(res: Results) -> str:
              "", "== sensitivity to the exclusion and test-set rules ==",
              _round(res.sensitivity.drop(columns=["method"]), 2).to_string(index=False),
              "", "== pump runs ==", res.runs.to_string(index=False),
+             "", "== free gas at intake ==", _round(res.gas, 2).to_string(index=False),
              "", "== events ==", res.events.groupby(["WELL_NAME", "type"]).size().to_string(),
              "", json.dumps({k: str(v) for k, v in res.meta.items()}, indent=1)]
     return "\n".join(lines)

@@ -1,9 +1,11 @@
 import pandas as pd
 import streamlit as st
 
+from core import config as C
+
 from core.virtual_rate import gap_intervals, pump_off_intervals
 from ui import data as D
-from ui.charts import quality_stack, signal_viewer
+from ui.charts import intake_vs_pb_chart, quality_stack, signal_viewer
 from ui.components import excluded_notice
 from ui.sidebar import filters
 from ui.theme import CATEGORY_LABELS
@@ -92,6 +94,19 @@ else:
     ev = D.window_events((well,), f["start"], f["end"])
     st.plotly_chart(signal_viewer(well, s, f["freq"], pump_off_intervals(ev, well), gap_intervals(ev, well)),
                     key="signal_viewer", config=dict(displaylogo=False))
+    # --- intake pressure against the bubble point ---
+    gas = D.gas_by_well()
+    if well in gas.index:
+        g = gas.loc[well]
+        st.markdown("**Intake pressure vs bubble point**")
+        st.caption(f"Lab bubble point {g['Pb']:,.0f} psi (Rs {g['Rs_b']:,.0f} scf/stb, oil viscosity "
+                   f"{g['oil_visc_cp']:.2f} cp). Over the whole history the intake sits "
+                   f"{g['PIP_minus_Pb_median']:+,.0f} psi from Pb and {g['pct_rows_below_Pb']:.0f} % of rows are below "
+                   f"it, giving an estimated gas fraction of {g['gvf_median_pct']:.0f} % (median) and "
+                   f"{g['gvf_p95_pct']:.0f} % (p95). The gas fraction is {C.GVF_CAVEAT}.")
+        st.plotly_chart(intake_vs_pb_chart(well, s, float(g["Pb"]), g.to_dict()),
+                        key="intake_pb", config=dict(displaylogo=False))
+
     cats = D.well_slice(well, f["start"], f["end"])
     if len(cats):
         from core.quality import exclusion_reason

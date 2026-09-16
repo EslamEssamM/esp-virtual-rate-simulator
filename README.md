@@ -90,8 +90,43 @@ entry from `EXCLUDED_WELLS` is the only change needed to analyse that well, once
    4 loaded wells (67,240 on the analysed three).
 2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv` - well tests: 72 loaded, 55 on the analysed wells.
 3. `ESP_MASTER_DATASET.csv` - pump-run metadata per test (manufacturer, model, stages, depth,
-   days from installation). It gives the current run's install date, drawn as a dashed marker on
-   the rate charts, and resets the LOW_PIP_TREND baseline per run.
+   days from installation) plus per-test water cut, Bo and B_liq. It gives the current run's
+   install date, drawn as a dashed marker on the rate charts, resets the LOW_PIP_TREND baseline
+   per run, and supplies the PVT used by the water-cut correction.
+4. `pvtdetails_4wells.csv` - one lab PVT model per well: bubble point, solution GOR, Bo, oil
+   viscosity, oil SG, API, reservoir temperature. Used for the free-gas indicator. P56 / P58 / P59
+   in the 81-parameter CSV are deliberately ignored: they are dataset-wide placeholders.
+
+## PVT: water cut and free gas
+
+**Water-cut correction (model M6, optional, off by default).** The power equation returns the rate
+at pump conditions while well tests are at surface, so K silently carries 1/B_liq at the
+calibration water cut:
+
+```
+B_liq = WC * 1.020 + (1 - WC) * Bo
+K_dh  = Q_test * B_liq_test / X_test
+Q_M6  = K_dh * X(t) / B_liq(t)
+```
+
+WC and Bo are interpolated in time between the well's tests. A sidebar toggle switches every rate,
+KPI, period statistic and export between M1 and M6. Physically right, numerically small here:
+water cut moves only 55-83 % inside the SCADA period, so the correction stays under 2 % of rate and
+M6's leave-one-out error is marginally worse than M1's (4.1 % vs 3.8 % excluding suspect tests).
+A test is screened as suspect on K, never on K_dh.
+
+**Free gas at the intake.** Intake pressure against each well's lab bubble point:
+
+| Well | Pb, psi | PIP - Pb, psi | rows below Pb | estimated GVF |
+|---|---|---|---|---|
+| SA-0162_T | 1535 | -96 | 91 % | ~1 % |
+| SA-0500_T | 1490 | +61 | 10 % | ~0 % |
+| SA-0512H_T | 1770 | -1337 | 100 % | ~49 % |
+
+SA-0512H_T runs about 1,300 psi below bubble point, so roughly half the volume entering the pump is
+free gas. The gas fraction is estimated with an assumed gas gravity of 0.80 and Z = 0.9, neither of
+which is in the data: the sign and order of magnitude are solid, the exact percentage is not. It is
+reported and raises a `GAS_AT_INTAKE` event, and is never used in the rate.
 
 ## Validation
 
@@ -103,7 +138,9 @@ and excluding the two suspect tests:
 | method | MAPE all | median all | MAPE excl. suspect | median excl. suspect |
 |---|---|---|---|---|
 | M1 single-K (leave-one-out) | 8.4 | 3.4 | 3.8 | 3.3 |
+| M6 water-cut corrected (leave-one-out) | 8.9 | 3.7 | 4.1 | 3.6 |
 | M2 walk-forward K | 10.6 | 6.1 | 5.0 | 4.7 |
+| M6 water-cut corrected (walk-forward) | 10.7 | 5.9 | 5.1 | 5.0 |
 | Baseline last test carried forward | 13.7 | 6.0 | 5.4 | 5.7 |
 
 The Calibration & validation page also shows the same figures per well and a sensitivity panel:
@@ -126,6 +163,7 @@ core/
   calibration.py    suspect screening, K_single, K_interp
   validation.py     M1 leave-one-out, M2 walk-forward, baseline last-test; APE / MAPE
   virtual_rate.py   Q_virtual, PHI, resampling, period statistics
+  pvt.py            B_liq water-cut correction and the free-gas-at-intake indicator
   diagnosis.py      rule-based events (no diagnostic matrix)
   pipeline.py       end-to-end run with parquet cache
 tests/              pytest suite

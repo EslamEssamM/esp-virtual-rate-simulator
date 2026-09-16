@@ -27,8 +27,14 @@ def well_light(well: str) -> str:
     return WELL_LIGHT.get(well, "rgba(137,135,129,0.35)")
 
 
-METHOD_COLORS = {"M1_LOO": "#2a78d6", "M2_WALK": "#eb6834", "BASE_LAST_TEST": "#898781"}
-METHOD_LABELS = {"M1_LOO": "M1 single-K (LOO)", "M2_WALK": "M2 walk-forward", "BASE_LAST_TEST": "Baseline last test"}
+METHOD_COLORS = {"M1_LOO": "#2a78d6", "M6_LOO": "#86b6ef",          # M6 is a lighter step of M1's hue
+                 "M2_WALK": "#eb6834", "M6_WALK": "#f0a687",        # ... and of M2's
+                 "BASE_LAST_TEST": "#898781"}
+METHOD_LABELS = {"M1_LOO": "M1 single-K (LOO)", "M6_LOO": "M6 water-cut corrected (LOO)",
+                 "M2_WALK": "M2 walk-forward", "M6_WALK": "M6 water-cut corrected (walk-forward)",
+                 "BASE_LAST_TEST": "Baseline last test"}
+BASE_METHODS = ["M1_LOO", "M2_WALK", "BASE_LAST_TEST"]
+WC_ALL_METHODS = ["M1_LOO", "M6_LOO", "M2_WALK", "M6_WALK", "BASE_LAST_TEST"]
 
 # status colours (reserved; never used for a series)
 GOOD, WARNING, SERIOUS, CRITICAL = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
@@ -63,6 +69,11 @@ EVENT_COLORS = {
     "TEMP_UNIT_SWITCH": "#4a3aa7", "RATE_STEP": "#2a78d6", "PHI_DRIFT": "#d03b3b", "BACKPRESSURE": "#ec835a",
     "LOW_PIP_TREND": "#1baf7a", "SUSPECT_TEST": "#e34948",
 }
+# intake vs bubble point (spec addendum B)
+GAS_COLORS = {"ok": GOOD, "watch": WARNING, "gassy": CRITICAL, "unknown": MUTED}
+GAS_BADGE = {"ok": "green", "watch": "orange", "gassy": "red", "unknown": "gray"}
+GAS_LABEL = {"ok": "above Pb", "watch": "near Pb", "gassy": "gassy", "unknown": "no PVT"}
+
 SEVERITY_ICON = {"info": ":material/info:", "warning": ":material/warning:", "critical": ":material/error:"}
 SEVERITY_BADGE = {"info": "blue", "warning": "orange", "critical": "red"}
 

@@ -39,8 +39,10 @@ def rate_series(well: str, start: str, end: str, freq: str, steady_only: bool) -
     gaps > 2 h); 'h' / 'D' -> medians with empty bins kept so lines break at gaps."""
     d = well_slice(well, start, end)
     if freq == "30min":
-        r = vr.rate_rows(d, steady_only)[["TIME_STAMP", "Q_single", "Q_interp", "PHI", "K_single", "K_interp",
-                                          "X", "rate_steady", "VOLTAGE", "AMPERAGE", "dP", "PIP", "PDP", "WHP"]]
+        cols = (["TIME_STAMP", "X", "rate_steady", "VOLTAGE", "AMPERAGE", "dP", "PIP", "PDP", "WHP"]
+                + [c for c in vr.RATE_COLS if c in d.columns]
+                + [c for c in vr.PVT_ROW_COLS if c in d.columns])
+        r = vr.rate_rows(d, steady_only)[cols]
         return break_gaps(r, pd.Timedelta(hours=2))
     return vr.resample_rates(d, freq, steady_only, keep_empty_bins=True)
 
@@ -50,14 +52,30 @@ def signal_series(well: str, start: str, end: str, freq: str) -> pd.DataFrame:
     """Raw signals over ALL rows (including pump-off) for the signal viewer."""
     d = well_slice(well, start, end)
     if freq == "30min":
-        cols = ["TIME_STAMP"] + [c for c in vr.SIGNAL_COLS if c in d.columns] + ["pump_off", "usable", "steady", "temp_unit_c"]
+        cols = (["TIME_STAMP"] + [c for c in vr.SIGNAL_COLS + vr.PVT_ROW_COLS + ["Pb"] if c in d.columns]
+                + ["pump_off", "usable", "steady", "temp_unit_c"])
         return break_gaps(d[cols], pd.Timedelta(hours=2))
     return vr.resample_signals(d, freq)
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
-def period_stats(well: str, start: str, end: str, k_mode: str, steady_only: bool) -> dict:
-    return vr.period_stats(well_slice(well, start, end), k_mode, steady_only)
+def period_stats(well: str, start: str, end: str, k_mode: str, steady_only: bool,
+                 wc_correction: bool = False) -> dict:
+    return vr.period_stats(well_slice(well, start, end), k_mode, steady_only, wc_correction)
+
+
+@st.cache_resource
+def gas_by_well() -> pd.DataFrame:
+    """Per-well intake-vs-bubble-point summary, indexed by well."""
+    return get_results().gas.set_index("WELL_NAME")
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def pvt_series(well: str) -> pd.DataFrame:
+    """Per-test water cut and B_liq for the water-cut chart."""
+    r = get_results()
+    t = r.test_pvt
+    return t[t["WELL_NAME"] == well].sort_values("TEST_TS")
 
 
 @st.cache_data(show_spinner=False, max_entries=64)

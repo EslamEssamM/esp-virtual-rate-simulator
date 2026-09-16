@@ -4,16 +4,19 @@ import streamlit as st
 from core.config import EFF_DENOM
 from core.validation import whatif_k, whatif_mape
 from ui import data as D
-from ui.charts import k_chart, validation_chart, whatif_chart
+from ui.charts import k_chart, validation_chart, watercut_chart, whatif_chart
 from ui.components import excluded_notice
 from ui.sidebar import filters
-from ui.theme import METHOD_LABELS
+from ui.theme import BASE_METHODS, METHOD_LABELS, WC_ALL_METHODS
 
 f = filters()
 res = D.get_results()
 wells = list(f["wells_analysed"])
 mm = res.matched
 cal = res.cal.set_index("WELL_NAME")
+
+WC = f["wc_correction"]
+METHODS_SHOWN = WC_ALL_METHODS if WC else BASE_METHODS
 
 st.title("Calibration & validation", anchor=False)
 st.caption("K = Q_test / X at each well test that has steady SCADA rows within +/-12 h (widened to +/-24 h when needed). "
@@ -32,14 +35,19 @@ ct["V window"] = ct["V_lo"].round(0).astype(int).astype(str) + " - " + ct["V_hi"
 ct["first_test"] = ct["first_test"].dt.strftime("%Y-%m-%d")
 ct["last_test"] = ct["last_test"].dt.strftime("%Y-%m-%d")
 st.dataframe(
-    ct[["WELL_NAME", "K_single", "K_min", "K_max", "K_cv_pct", "tests", "first_test", "last_test", "V_BASIS", "V window", "implied_eff"]],
+    ct[["WELL_NAME", "K_single", "K_cv_pct"] + (["K_dh_single", "K_dh_cv_pct"] if WC else [])
+       + ["tests", "first_test", "last_test", "V_BASIS", "V window", "implied_eff"]],
     hide_index=True,
     column_config={
         "WELL_NAME": st.column_config.TextColumn("Well", pinned=True),
         "K_single": st.column_config.NumberColumn("K single", format="%.2f", help="Median K of the non-suspect matched tests."),
-        "K_min": st.column_config.NumberColumn("K min", format="%.2f"),
-        "K_max": st.column_config.NumberColumn("K max", format="%.2f"),
         "K_cv_pct": st.column_config.NumberColumn("K spread (CV %)", format="%.1f"),
+        "K_dh_single": st.column_config.NumberColumn("K_dh single", format="%.2f",
+                                                     help="Downhole-basis K: K x B_liq at the test. Used by the "
+                                                          "water-cut corrected rate (M6)."),
+        "K_dh_cv_pct": st.column_config.NumberColumn("K_dh spread (CV %)", format="%.1f",
+                                                     help="If the water-cut correction removed a real drift, this "
+                                                          "would be smaller than the K spread. On this dataset it is not."),
         "tests": "Matched tests", "first_test": "First test", "last_test": "Last test",
         "V_BASIS": st.column_config.TextColumn("V basis", help="LV = drive side (< 800 V), MV = motor side."),
         "V window": st.column_config.TextColumn("Calibrated V window", help="0.8 x min ... 1.2 x max of the voltages at the calibration tests; rows outside carry no rate."),
@@ -54,8 +62,9 @@ st.caption(":material/warning: Implied overall efficiency is 0.17-0.28 on the MV
 st.subheader("Matched well tests", anchor=False)
 mt = mm[mm["WELL_NAME"].isin(wells)].copy()
 st.dataframe(
-    mt[["WELL_NAME", "TEST_TS", "Q_LIQ", "RT_X", "K", "PIP_diff_vs_test", "robust_z", "suspect", "n_steady", "window_h", "V_BASIS",
-        "RT_VOLTAGE", "RT_AMPERAGE", "RT_dP", "T_PIP", "RT_PIP", "run"]],
+    mt[["WELL_NAME", "TEST_TS", "Q_LIQ", "RT_X", "K"] + (["WC_FRAC", "B_LIQ", "K_dh"] if WC else [])
+       + ["PIP_diff_vs_test", "robust_z", "suspect", "n_steady", "window_h", "V_BASIS",
+          "RT_VOLTAGE", "RT_AMPERAGE", "RT_dP", "T_PIP", "RT_PIP", "run"]],
     hide_index=True,
     column_config={
         "WELL_NAME": st.column_config.TextColumn("Well", pinned=True),
@@ -63,6 +72,11 @@ st.dataframe(
         "Q_LIQ": st.column_config.NumberColumn("Q test (BFPD)", format="%.0f"),
         "RT_X": st.column_config.NumberColumn("X at test", format="%.2f", help="sqrt(3) x V x I / dP, median of steady rows in the window"),
         "K": st.column_config.NumberColumn("K", format="%.2f"),
+        "WC_FRAC": st.column_config.NumberColumn("Water cut", format="percent",
+                                                 help="From ESP_MASTER_DATASET (WATER_CUT_PCT) at this test."),
+        "B_LIQ": st.column_config.NumberColumn("B_liq", format="%.4f",
+                                               help="WC x 1.020 + (1 - WC) x Bo, rb/stb."),
+        "K_dh": st.column_config.NumberColumn("K_dh", format="%.2f", help="K x B_liq: the downhole-basis factor."),
         "PIP_diff_vs_test": st.column_config.NumberColumn("PIP diff (psi)", format="%.0f", help="median SCADA PIP - test PIP (sanity check)"),
         "robust_z": st.column_config.NumberColumn("Robust z", format="%.1f"),
         "suspect": st.column_config.CheckboxColumn("Suspect"),
@@ -95,18 +109,32 @@ for i, w in enumerate(wells):
         st.plotly_chart(k_chart(w, mm[mm["WELL_NAME"] == w], cal.loc[w] if w in cal.index else None, f["t0"], f["t1"]),
                         key=f"k_{w}", config=dict(displaylogo=False))
 
+# ---------------------------------------------------------------- water cut and B_liq
+st.subheader("Water cut and B_liq", anchor=False)
+st.caption("The power equation returns the rate at pump conditions; well tests are measured at surface. B_liq is the "
+           "ratio between the two. Calibrating K straight to a surface test hides 1/B_liq inside K, which drifts as "
+           "water cut rises. The sidebar toggle switches the whole app to the corrected form and adds the K_dh and "
+           "M6 columns above.")
+wcols = st.columns(2)
+for i, w in enumerate(wells):
+    with wcols[i % 2]:
+        dly = res.daily[res.daily["WELL_NAME"] == w]
+        st.plotly_chart(watercut_chart(w, D.pvt_series(w), dly), key=f"wc_{w}", config=dict(displaylogo=False))
+
 # ---------------------------------------------------------------- validation
 st.subheader("Validation against well tests", anchor=False)
-st.caption("Three predictions per matched test: M1 = single K from the well's other non-suspect tests (leave-one-out); "
-           "M2 = K from the most recent earlier non-suspect test (walk-forward); baseline = last well-test rate carried forward "
-           "(what engineers use today). Bars are the absolute % error of each prediction.")
+st.caption("Predictions per matched test: M1 = single K from the well's other non-suspect tests (leave-one-out); "
+           "M2 = K from the most recent earlier non-suspect test (walk-forward); baseline = last well-test rate "
+           "carried forward (what engineers use today). Bars are the absolute % error of each prediction."
+           + (" M6 is the water-cut corrected twin of M1 and M2: it calibrates K_dh at pump conditions and divides "
+              "by B_liq at the test." if WC else ""))
 v = res.validation[res.validation["WELL_NAME"].isin(wells)]
 c1, c2 = st.columns([3, 2])
 with c1:
-    st.plotly_chart(validation_chart(v), key="validation_chart", config=dict(displaylogo=False))
+    st.plotly_chart(validation_chart(v, methods=METHODS_SHOWN), key="validation_chart", config=dict(displaylogo=False))
 with c2:
     st.markdown("**Error per method**")
-    mo = res.mape_overall.copy()
+    mo = res.mape_overall[res.mape_overall["method"].isin(METHODS_SHOWN)].copy()
     mo["label"] = mo["method"].map(METHOD_LABELS)
     st.dataframe(mo[["label", "MAPE_all", "MdAPE_all", "n_all", "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],
                  hide_index=True,
@@ -124,7 +152,8 @@ with c2:
                "scored on the same tests. The median column shows the typical test; the mean is pulled up by the two "
                "suspect tests.")
     with st.expander("Per well", icon=":material/table_rows:"):
-        mw = res.mape[(res.mape["scope"] != "ALL") & res.mape["scope"].isin(wells)].copy()
+        mw = res.mape[(res.mape["scope"] != "ALL") & res.mape["scope"].isin(wells)
+                      & res.mape["method"].isin(METHODS_SHOWN)].copy()
         mw["label"] = mw["method"].map(METHOD_LABELS)
         st.dataframe(mw[["scope", "label", "MAPE_all", "MdAPE_all", "n_all", "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],
                      hide_index=True,
@@ -137,7 +166,7 @@ with c2:
     with st.expander("Effect of the exclusion and test-set rules", icon=":material/rule_settings:"):
         st.caption("What the headline errors would be under other rules. The first block is what the app reports "
                    "everywhere; the others are shown only so the effect of each rule is visible.")
-        sv = res.sensitivity.copy()
+        sv = res.sensitivity[res.sensitivity["method"].isin(METHODS_SHOWN)].copy()
         sv["label"] = sv["method"].map(METHOD_LABELS)
         st.dataframe(sv[["wells_scope", "test_rule", "label", "MAPE_all", "MdAPE_all", "n_all",
                          "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],

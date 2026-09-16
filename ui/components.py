@@ -6,7 +6,8 @@ import streamlit as st
 
 from core import config as C
 from core.config import PHI_HELP
-from ui.theme import fmt_num
+from core.pvt import gas_severity
+from ui.theme import GAS_BADGE, GAS_LABEL, fmt_num
 
 BASE_NOTES = [
     "All wells have a SCADA gap from Jun to Nov 2024 (shaded grey on the charts).",
@@ -63,25 +64,54 @@ def well_header(well: str, run: dict, extra: str | None = None):
             st.caption(extra)
 
 
-def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_mode: str, run_label_now: str):
-    """Seven KPI tiles for one well over the selected period."""
+def intake_tile(stats: dict, gas: pd.Series | None):
+    """Intake vs bubble point, coloured by how far below it the pump is running."""
+    dpb = stats.get("med_PIP_minus_Pb")
+    sev = gas_severity(dpb)
+    below = stats.get("pct_below_pb")
+    gvf = stats.get("med_gvf_est")
+    pb = stats.get("Pb")
+    delta = None
+    if pd.notna(below) and pd.notna(gvf):
+        delta = f"{below:.0f} % below Pb, GVF ~{gvf * 100:.0f} %"
+    st.metric(f":{GAS_BADGE[sev]}-badge[{GAS_LABEL[sev]}] Intake - Pb",
+              fmt_num(dpb, 0), delta, delta_color="off", delta_arrow="off", border=True,
+              help=(f"Median intake pressure minus the lab bubble point"
+                    + (f" ({pb:,.0f} psi)" if pd.notna(pb) else "")
+                    + ". Below the bubble point gas comes out of solution at the pump, which lowers head and "
+                      "efficiency, so a constant K holds only while the gas fraction is stable. The gas volume "
+                      f"fraction is {C.GVF_CAVEAT} and is indicative, not quantitative."))
+
+
+def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_mode: str, run_label_now: str,
+              wc_correction: bool = False, gas: pd.Series | None = None):
+    """KPI tiles for one well over the selected period."""
     med = stats["rate_median"]
     last_rate = stats["rate_last"]
-    delta_rate = (f"{last_rate - med:+,.0f} vs period median" if pd.notna(last_rate) and pd.notna(med) else None)
-    k_label = "K interpolated" if k_mode == "interp" else "K single"
-    c = st.columns(4, gap="small") + st.columns(4, gap="small")
+    delta_rate = (f"{last_rate - med:+,.0f} vs median" if pd.notna(last_rate) and pd.notna(med) else None)
+    k_label = ("K_dh interpolated" if k_mode == "interp" else "K_dh single") if wc_correction \
+        else ("K interpolated" if k_mode == "interp" else "K single")
+    k_value = stats["K_dh"] if wc_correction else stats["K"]
+    n = 10 if wc_correction else 9
+    # four tiles per row: any more and the labels ellipsize on a laptop screen
+    c = []
+    for start in range(0, n, 4):
+        c += st.columns(min(4, n - start), gap="small")
     with c[0]:
         st.metric("Virtual rate, BFPD", fmt_num(last_rate, 0), delta_rate, delta_color="off", border=True,
                   help=f"Last steady row in the selected period ({stats['rate_last_ts']:%Y-%m-%d %H:%M})." if pd.notna(stats["rate_last_ts"]) else "No steady rows with a calibrated rate in this period.")
     with c[1]:
-        st.metric(k_label, fmt_num(stats["K"], 2), border=True,
-                  help="Q = K x sqrt(3) x V x I / (PDP - PIP). K lumps PF, motor and pump efficiency, "
-                       "transformer/cable ratios and the volume factor. "
+        st.metric(k_label, fmt_num(k_value, 2), border=True,
+                  help=("Q = K_dh x sqrt(3) x V x I / (PDP - PIP) / B_liq. K_dh is calibrated at pump conditions, "
+                        "so the water-cut dependence is carried by B_liq instead of being hidden in K. "
+                        if wc_correction else
+                        "Q = K x sqrt(3) x V x I / (PDP - PIP). K lumps PF, motor and pump efficiency, "
+                        "transformer/cable ratios and the volume factor. ")
                        + (f"K single = {cal_row['K_single']:.2f} from {int(cal_row['n_tests'])} tests" if cal_row is not None else ""))
     with c[2]:
         if last is not None:
             st.metric("Last test, BFPD", fmt_num(last["last_test_q"], 0),
-                      f"{pd.Timestamp(last['last_test_ts']):%d %b %Y}" + (" (suspect)" if last["last_test_suspect"] else ""),
+                      f"{pd.Timestamp(last['last_test_ts']):%d %b %y}" + (" suspect" if last["last_test_suspect"] else ""),
                       delta_color="off", delta_arrow="off", border=True,
                       help="Most recent well test that has steady SCADA rows within +/-12 h (or +/-24 h).")
         else:
@@ -103,10 +133,20 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
         st.metric("Uptime, %", fmt_num(stats["uptime_pct"], 0), border=True,
                   help="Rows not flagged pump_off (V >= 100 V, I >= 5 A, Hz != 0) / all rows in the period.")
     with c[7]:
-        st.metric("Metered liquid, bbl", fmt_num(stats["cum_bbl"], 0), f"{stats['rate_coverage_pct']:.0f} % of hours metered",
+        intake_tile(stats, gas)
+    with c[8]:
+        st.metric("Metered liquid, bbl", fmt_num(stats["cum_bbl"], 0), f"{stats['rate_coverage_pct']:.0f} % of hours",
                   delta_color="off", delta_arrow="off", border=True,
                   help="Sum of hourly median virtual rate x 1 h over hours that have a valid steady rate. Hours without a rate "
                        "contribute nothing, so this is metered liquid, not calendar production.")
+    if wc_correction:
+        with c[9]:
+            eff = stats.get("wc_effect_pct")
+            st.metric("WC correction now, %", (f"{eff:+.1f}" if pd.notna(eff) else "n/a"),
+                      f"B_liq {stats['med_B_LIQ']:.3f} at WC {stats['med_WC_FRAC'] * 100:.0f} %"
+                      if pd.notna(stats.get("med_B_LIQ")) else None,
+                      delta_color="off", delta_arrow="off", border=True,
+                      help="How much the B_liq correction moves the rate at the latest row: Q_M6 / Q_M1 - 1.")
     if run_label_now == "previous":
         st.caption(":material/history: The selected period ends inside the **previous pump run** for this well. "
                    "K is calibrated on the current run's tests; treat rates in the previous run as indicative only.")

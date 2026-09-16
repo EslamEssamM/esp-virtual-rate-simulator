@@ -20,6 +20,7 @@ EVENT_TYPES = {
     "BACKPRESSURE": "warning",
     "LOW_PIP_TREND": "warning",
     "SUSPECT_TEST": "critical",
+    "GAS_AT_INTAKE": "info",
 }
 EVENT_COLUMNS = ["WELL_NAME", "start", "end", "type", "severity", "duration_d",
                  "explanation", "evidence", "value_before", "value_after", "change_pct", "signal"]
@@ -232,6 +233,37 @@ def low_pip_trends(daily: pd.DataFrame, pip_baselines: pd.DataFrame, pct: float 
     return ev
 
 
+def gas_at_intake(daily: pd.DataFrame, margin: float = C.GAS_AT_INTAKE_MARGIN,
+                  roll: int = C.GAS_ROLL_DAYS) -> list[dict]:
+    """Rolling 30-day median intake pressure more than `margin` below the bubble point.
+
+    Informational: free gas at the pump lowers head and efficiency, so a constant K stays valid
+    only while the gas fraction is stable.
+    """
+    ev = []
+    if "PIP_minus_Pb" not in daily.columns:
+        return ev
+    for w, g in daily.groupby("WELL_NAME", sort=False):
+        s = g.dropna(subset=["PIP_minus_Pb"]).set_index("day")["PIP_minus_Pb"]
+        if s.empty:
+            continue
+        r = s.rolling(roll, min_periods=10).median()
+        gvf = g.dropna(subset=["PIP_minus_Pb"]).set_index("day").get("gvf_est")
+        pb = float(g["Pb"].dropna().iloc[0]) if "Pb" in g.columns and g["Pb"].notna().any() else np.nan
+        for a, b in _runs(r < -margin):
+            seg = r.iloc[a:b + 1]
+            gseg = gvf.iloc[a:b + 1].median() * 100 if gvf is not None and gvf.notna().any() else np.nan
+            ev.append(_event(w, s.index[a], s.index[b], "GAS_AT_INTAKE",
+                             "Intake pressure is well below bubble point; free gas at the pump lowers head "
+                             "and efficiency, so K is only valid while the gas fraction stays stable. Watch PHI.",
+                             dict(Pb=round(pb, 0), PIP_minus_Pb_30d=round(float(seg.median()), 0),
+                                  gvf_est_pct=round(float(gseg), 1) if np.isfinite(gseg) else np.nan,
+                                  gvf_basis=C.GVF_CAVEAT, days=int(b - a + 1)),
+                             signal="PIP", before=pb, after=float(seg.median() + pb) if np.isfinite(pb) else np.nan,
+                             change=float(seg.median())))
+    return ev
+
+
 def suspect_test_events(mm: pd.DataFrame) -> list[dict]:
     ev = []
     for _, r in mm[mm["suspect"]].iterrows():
@@ -248,7 +280,7 @@ def detect_events(d: pd.DataFrame, daily: pd.DataFrame, mm: pd.DataFrame, pip_ba
                   q: str = "Q_interp") -> pd.DataFrame:
     ev = (scada_gaps(d) + pump_off_events(d) + voltage_basis_changes(daily) + temp_unit_switches(daily)
           + rate_steps(daily, q) + phi_drifts(daily) + backpressure_events(daily)
-          + low_pip_trends(daily, pip_baselines) + suspect_test_events(mm))
+          + low_pip_trends(daily, pip_baselines) + gas_at_intake(daily) + suspect_test_events(mm))
     if not ev:
         return pd.DataFrame(columns=EVENT_COLUMNS)
     e = pd.DataFrame(ev)[EVENT_COLUMNS].sort_values(["WELL_NAME", "start", "type"]).reset_index(drop=True)

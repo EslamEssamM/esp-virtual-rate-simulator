@@ -27,6 +27,9 @@ def flag_suspect(m: pd.DataFrame, z_max: float = C.ROBUST_Z_MAX) -> pd.DataFrame
     mm = m[m["MATCH"] == "MATCHED"].copy()
     mm["robust_z"] = mm.groupby("WELL_NAME")["K"].transform(robust_z)
     mm["suspect"] = (mm["robust_z"] > z_max).fillna(False).astype(bool)
+    # downhole-basis factor: K with the surface->pump volume change taken out of it. A test is
+    # suspect on K, never on K_dh - the screen must not depend on the PVT correction.
+    mm["K_dh"] = mm["K"] * mm["B_LIQ"] if "B_LIQ" in mm.columns else np.nan
     return mm.sort_values(["WELL_NAME", "TEST_TS"]).reset_index(drop=True)
 
 
@@ -55,6 +58,14 @@ def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) ->
             V_lo=float(C.ELEC_BASIS_LO * g["RT_VOLTAGE"].min()),
             V_hi=float(C.ELEC_BASIS_HI * g["RT_VOLTAGE"].max()),
             V_BASIS=g["V_BASIS"].mode().iloc[0],
+            K_dh_single=float(g["K_dh"].median()) if g["K_dh"].notna().any() else np.nan,
+            K_dh_min=float(g["K_dh"].min()) if g["K_dh"].notna().any() else np.nan,
+            K_dh_max=float(g["K_dh"].max()) if g["K_dh"].notna().any() else np.nan,
+            K_dh_cv_pct=float(g["K_dh"].std() / g["K_dh"].mean() * 100) if g["K_dh"].notna().sum() > 1 else np.nan,
+            WC_min=float(g["WC_FRAC"].min()) if "WC_FRAC" in g and g["WC_FRAC"].notna().any() else np.nan,
+            WC_max=float(g["WC_FRAC"].max()) if "WC_FRAC" in g and g["WC_FRAC"].notna().any() else np.nan,
+            B_LIQ_min=float(g["B_LIQ"].min()) if "B_LIQ" in g and g["B_LIQ"].notna().any() else np.nan,
+            B_LIQ_max=float(g["B_LIQ"].max()) if "B_LIQ" in g and g["B_LIQ"].notna().any() else np.nan,
             PHI_base=float(np.median(g["RT_dP"] / g["RT_P_elec_kVA"])),
             # PIP baseline for LOW_PIP_TREND = median SCADA PIP around the FIRST calibration test
             PIP_base=float(g.sort_values("TEST_TS")["RT_PIP"].iloc[0]),
@@ -83,14 +94,15 @@ def pip_baselines(mm: pd.DataFrame, runs: pd.DataFrame | None, rt_start, rt_end)
     return pd.DataFrame(rows)
 
 
-def k_interp(times: pd.Series, cal_tests: pd.DataFrame) -> np.ndarray:
-    """K at each timestamp, linear between non-suspect tests, flat outside."""
-    c = cal_tests[~cal_tests["suspect"]].sort_values("TEST_TS")
+def k_interp(times: pd.Series, cal_tests: pd.DataFrame, col: str = "K") -> np.ndarray:
+    """`col` at each timestamp, linear between non-suspect tests, flat outside ('K' or 'K_dh')."""
+    c = cal_tests[~cal_tests["suspect"]]
+    c = c.dropna(subset=[col]).sort_values("TEST_TS") if col in c.columns else c.iloc[0:0]
     if c.empty:
         return np.full(len(times), np.nan)
     tnum = pd.to_datetime(times).astype("datetime64[ns]").astype("int64").to_numpy()
     cnum = c["TEST_TS"].astype("datetime64[ns]").astype("int64").to_numpy()
-    return np.interp(tnum, cnum, c["K"].to_numpy())
+    return np.interp(tnum, cnum, c[col].to_numpy())
 
 
 def calibrate(m: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

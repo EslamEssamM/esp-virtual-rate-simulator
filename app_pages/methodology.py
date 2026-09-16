@@ -207,8 +207,70 @@ st.markdown(f"""
 - **Pump runs**: the install date of the current run comes from the ESP master dataset (test date minus days from installation). Rows before it belong to the previous run and are labelled so; K is calibrated on the current run's tests.
 """)
 
-# ------------------------------------------------------------------ 9. diagnosis
-st.header("10. Rule-based event detection (no diagnostic matrix)", anchor=False)
+# ------------------------------------------------------------------ 10. PVT
+st.header("10. PVT: water cut and free gas at the intake", anchor=False)
+p1, p2 = st.columns(2)
+with p1:
+    st.markdown("**A. Water-cut correction (model M6)**")
+    st.markdown("The power equation returns the rate at **pump** conditions; well tests are measured at **surface**. "
+                "Calibrating K straight to a surface test therefore hides a factor 1/B_liq at the calibration water "
+                "cut, which drifts as water cut rises. Separating the two:")
+    st.latex(r"B_{liq} = WC \cdot B_w + (1-WC)\,B_o, \qquad B_w = 1.020")
+    st.latex(r"K_{dh} = \frac{Q_{test}\, B_{liq,test}}{X_{test}}, \qquad Q_{M6}(t) = \frac{K_{dh}\, X(t)}{B_{liq}(t)}")
+    st.markdown(f"""
+WC and Bo come per test from `{C.ESP_MASTER_FILE.name}` (`WATER_CUT_PCT`, `B_O_RBSTB`) and are interpolated in time
+between the well's tests, flat outside. B_liq computed this way reproduces the file's own `B_LIQ_RBSTB` to better
+than 0.001.
+
+A test is screened as suspect on **K**, never on K_dh: the outlier screen must not depend on the PVT correction.
+The sidebar toggle switches every rate, KPI, statistic and export between M1 and M6; it is **off** by default.
+""")
+    cw = res.cal[["WELL_NAME", "K_single", "K_cv_pct", "K_dh_single", "K_dh_cv_pct", "WC_min", "WC_max",
+                  "B_LIQ_min", "B_LIQ_max"]]
+    st.dataframe(cw, hide_index=True, column_config={
+        "WELL_NAME": "Well",
+        "K_single": st.column_config.NumberColumn("K", format="%.2f"),
+        "K_cv_pct": st.column_config.NumberColumn("K CV %", format="%.1f"),
+        "K_dh_single": st.column_config.NumberColumn("K_dh", format="%.2f"),
+        "K_dh_cv_pct": st.column_config.NumberColumn("K_dh CV %", format="%.1f"),
+        "WC_min": st.column_config.NumberColumn("WC min", format="percent"),
+        "WC_max": st.column_config.NumberColumn("WC max", format="percent"),
+        "B_LIQ_min": st.column_config.NumberColumn("B_liq min", format="%.3f"),
+        "B_LIQ_max": st.column_config.NumberColumn("B_liq max", format="%.3f")})
+    st.caption("Physically right, numerically small on this dataset: water cut only moves 55-83 % inside the SCADA "
+               "period, so B_liq stays within 1.04-1.07 and the correction is under 2 % of rate. K_dh is no more "
+               "stable than K (compare the two CV columns), and M6's leave-one-out error is slightly worse than M1's. "
+               "Keep M6 as the physically consistent form; expect it to matter when water cut moves by tens of points "
+               "between tests.")
+with p2:
+    st.markdown("**B. Free gas at the pump intake**")
+    st.markdown(f"""
+Per-well lab PVT from `{C.PVT_FILE.name}` (bubble point, solution GOR, API, reservoir temperature) against the
+measured intake pressure. P56 / P58 / P59 in the 81-parameter CSV are **not** used: they are dataset-wide
+placeholders, not per-well values.
+""")
+    st.latex(r"R_s(p) = \min\!\big(R_s^{Standing}(p),\, R_{sb}\big)\cdot \frac{R_{sb}}{R_s^{Standing}(P_b)}")
+    st.latex(r"B_g = \frac{0.0283\, Z\,(T+460)}{PIP}, \qquad GVF = \frac{(1-WC)\,V_g}{(1-WC)(V_g+B_o) + WC\,B_w}")
+    st.markdown(f"Gas gravity is **{C.GAS_GRAVITY}** and Z is **{C.Z_FACTOR}**; neither is in any input file. "
+                f"The gas fraction is therefore {C.GVF_CAVEAT}: the sign and order of magnitude are solid, the exact "
+                "percentage is not.")
+    st.dataframe(res.gas[["WELL_NAME", "Pb", "PIP_median", "PIP_minus_Pb_median", "pct_rows_below_Pb",
+                          "gvf_median_pct", "gvf_p95_pct"]], hide_index=True, column_config={
+        "WELL_NAME": "Well",
+        "Pb": st.column_config.NumberColumn("Pb, psi", format="%.0f"),
+        "PIP_median": st.column_config.NumberColumn("PIP median, psi", format="%.0f"),
+        "PIP_minus_Pb_median": st.column_config.NumberColumn("PIP - Pb, psi", format="%.0f"),
+        "pct_rows_below_Pb": st.column_config.NumberColumn("rows below Pb, %", format="%.0f"),
+        "gvf_median_pct": st.column_config.NumberColumn("GVF median, %", format="%.0f"),
+        "gvf_p95_pct": st.column_config.NumberColumn("GVF p95, %", format="%.0f")})
+    st.caption("This is the substantive finding. SA-0512H_T runs about 1,300 psi below its bubble point, so roughly "
+               "half the volume entering the pump is free gas. That reframes its low head factor, its PHI episodes "
+               "and the simultaneous current/PIP/PDP fluctuation as gas interference rather than instrument error. "
+               "The constant-K method still holds on that well only because the gas fraction has been stable; a "
+               "change in intake pressure or GOR will move K, and the PHI drift alarm is the right detector.")
+
+# ------------------------------------------------------------------ 11. diagnosis
+st.header("11. Rule-based event detection (no diagnostic matrix)", anchor=False)
 st.markdown(f"""
 Run on the per-well daily series (medians over rows that are not pump-off; rates over steady rows). Every event carries a one-line explanation and its evidence numbers.
 
@@ -224,16 +286,18 @@ Run on the per-well daily series (medians over rows that are not pump-off; rates
 | BACKPRESSURE | daily WHP > {C.BACKPRESSURE_FACTOR} x its trailing {C.BACKPRESSURE_TRAIL_DAYS}-day median for >= {C.BACKPRESSURE_MIN_DAYS} days | warning |
 | LOW_PIP_TREND | {C.LOW_PIP_ROLL_DAYS}-day median PIP > {C.LOW_PIP_PCT} % below the baseline = SCADA PIP at the first matched test of the same pump run | warning |
 | SUSPECT_TEST | from the calibration screening | critical |
+| GAS_AT_INTAKE | {C.GAS_ROLL_DAYS}-day median PIP more than {C.GAS_AT_INTAKE_MARGIN} psi below the bubble point | info |
 """)
 ev = res.events.groupby("type").size().rename("count").reset_index()
 st.dataframe(ev, hide_index=True, column_config={"type": "Event type", "count": "Events on this dataset"})
 
 # ------------------------------------------------------------------ 10. what is deliberately not done
-st.header("11. Scope and limitations", anchor=False)
+st.header("12. Scope and limitations", anchor=False)
 st.markdown("""
 - Only the constant-K power method is implemented: **no diagnostic matrix, no pump-curve model**.
 - A well whose SCADA cannot validate a K is excluded rather than given an unvalidated rate; the reason is shown verbatim wherever it would have appeared.
 - K absorbs everything unknown (PF, efficiencies, transformer ratio, volume factor). It is therefore only valid for the electrical basis it was calibrated on and for the pump run it was calibrated on; both are flagged on the charts rather than corrected.
 - PHI moves with the operating point as well as with pump condition; it is a drift indicator, not a pump-health measurement.
+- The gas volume fraction at the intake is an estimate with an assumed gas gravity; it is never used in the rate, only reported.
 - Well tests with fewer than 6 steady SCADA rows within 24 h are not used, and no row is ever dropped from the dataset: every exclusion is a visible flag on the Data quality page.
 """)

@@ -26,7 +26,14 @@ EXPECTED_PUMPS = {"SA-0162_T": ("D1150N", 157), "SA-0500_T": ("B538-1500", 148),
                   "SA-0512H_T": ("D1150N", 254), "SA-0991H_T": ("WG-4000", 145)}
 
 ANALYSIS_TABLES = ["mapped", "matched", "cal", "validation", "mape", "mape_overall",
-                   "daily", "hourly", "events", "pip_baselines", "sensitivity"]
+                   "daily", "hourly", "events", "pip_baselines", "sensitivity", "gas"]
+
+# --- PVT addendum ---------------------------------------------------------------------------
+EXPECTED_K_DH = {"SA-0162_T": 127.0, "SA-0500_T": 13.9, "SA-0512H_T": 23.0}
+EXPECTED_MAPE_M6 = {"M6_LOO": (8.9, 4.1), "M6_WALK": (10.7, 5.1)}
+EXPECTED_PB = {"SA-0162_T": 1535.0, "SA-0500_T": 1490.0, "SA-0512H_T": 1770.0}
+# well -> (PIP - Pb median psi, % rows below Pb, GVF median %)
+EXPECTED_GAS = {"SA-0162_T": (-96, 91, 1.0), "SA-0500_T": (61, 10, 0.0), "SA-0512H_T": (-1337, 100, 49)}
 
 
 def _mentions(df: pd.DataFrame, well: str) -> bool:
@@ -151,8 +158,10 @@ def test_mape(res, method, exp):
 
 def test_mape_common_test_set(res):
     row = res.mape_overall.set_index("method")
-    assert row["n_all"].tolist() == [13, 10, 13]
-    assert row["n_excl_suspect"].tolist() == [11, 8, 11]
+    for m in ["M1_LOO", "M6_LOO", "BASE_LAST_TEST"]:
+        assert row.loc[m, "n_all"] == 13 and row.loc[m, "n_excl_suspect"] == 11, m
+    for m in ["M2_WALK", "M6_WALK"]:                 # first test of each well has no earlier K
+        assert row.loc[m, "n_all"] == 10 and row.loc[m, "n_excl_suspect"] == 8, m
 
 
 def test_median_ape_reported(res):
@@ -189,6 +198,115 @@ def test_validation_counts(res):
     assert v["APE_M1_LOO"].notna().sum() == 13       # every analysed well has >= 2 matched tests
     assert v["APE_M2_WALK"].notna().sum() == 10      # first test of each well has no earlier K
     assert v["APE_BASE_LAST_TEST"].notna().sum() == 13
+
+
+# --------------------------------------------------------------------------- PVT: B_liq and M6
+
+def test_b_liq_reproduces_the_file(res):
+    """B_liq = WC * 1.020 + (1 - WC) * Bo must reproduce B_LIQ_RBSTB to 0.001."""
+    from core.pvt import b_liq
+    t = res.test_pvt.dropna(subset=["B_LIQ", "B_LIQ_FILE"])
+    assert len(t) > 50
+    assert (t["B_LIQ"] - t["B_LIQ_FILE"]).abs().max() < 0.001
+    assert b_liq(1.0, 1.15) == pytest.approx(C.BW)        # all water
+    assert b_liq(0.0, 1.15) == pytest.approx(1.15)        # all oil
+    assert b_liq(0.5, 1.10) == pytest.approx(1.06)
+
+
+def test_b_liq_on_matched_tests(res):
+    mm = res.matched
+    assert mm["B_LIQ"].notna().all() and mm["WC_FRAC"].between(0, 1).all()
+    assert np.allclose(mm["K_dh"], mm["K"] * mm["B_LIQ"])
+
+
+@pytest.mark.parametrize("well,k_exp", list(EXPECTED_K_DH.items()))
+def test_k_dh_single(res, well, k_exp):
+    k = float(res.cal.set_index("WELL_NAME").loc[well, "K_dh_single"])
+    assert k == pytest.approx(k_exp, rel=REL), f"{well}: K_dh={k:.2f} expected {k_exp}"
+
+
+@pytest.mark.parametrize("method,exp", list(EXPECTED_MAPE_M6.items()))
+def test_mape_m6(res, method, exp):
+    """The water-cut correction is physically right but slightly worse on this dataset."""
+    row = res.mape_overall.set_index("method").loc[method]
+    assert row["MAPE_all"] == pytest.approx(exp[0], rel=REL)
+    assert row["MAPE_excl_suspect"] == pytest.approx(exp[1], rel=REL)
+
+
+def test_m6_is_close_to_m1(res):
+    row = res.mape_overall.set_index("method")
+    assert row.loc["M6_LOO", "MAPE_excl_suspect"] > row.loc["M1_LOO", "MAPE_excl_suspect"]
+    assert row.loc["M6_LOO", "MAPE_excl_suspect"] - row.loc["M1_LOO", "MAPE_excl_suspect"] < 1.0
+
+
+def test_wc_correction_effect_is_small(res):
+    """Within +/-2% on this dataset, as the toggle help text states."""
+    d = res.rt[res.rt["rate_steady"]]
+    for c in ["wc_effect_single_pct", "wc_effect_interp_pct"]:
+        assert d[c].abs().max() < 2.5, c
+
+
+def test_suspect_flag_does_not_depend_on_pvt(res):
+    """A test is suspect on K, never on K_dh."""
+    from core.calibration import robust_z
+    mm = res.matched
+    z_on_k = mm.groupby("WELL_NAME")["K"].transform(robust_z)
+    assert (mm["suspect"] == (z_on_k > C.ROBUST_Z_MAX).fillna(False)).all()
+
+
+# --------------------------------------------------------------------------- PVT: free gas
+
+@pytest.mark.parametrize("well,pb", list(EXPECTED_PB.items()))
+def test_bubble_point(res, well, pb):
+    assert float(res.lab_pvt.set_index("WELL_NAME").loc[well, "PB"]) == pb
+
+
+def test_lab_pvt_loaded_for_every_well(res):
+    assert set(res.lab_pvt["WELL_NAME"]) == set(C.WELLS_ALL)
+    assert res.lab_pvt["RESERVOIR_TEMP"].eq(173).all()
+
+
+@pytest.mark.parametrize("well,exp", list(EXPECTED_GAS.items()))
+def test_free_gas_indicator(res, well, exp):
+    g = res.gas.set_index("WELL_NAME").loc[well]
+    dpb, pct_below, gvf = exp
+    assert g["PIP_minus_Pb_median"] == pytest.approx(dpb, abs=2)
+    assert g["pct_rows_below_Pb"] == pytest.approx(pct_below, abs=1)
+    assert g["gvf_median_pct"] == pytest.approx(gvf, abs=1.5)
+
+
+def test_gassy_well_is_always_below_bubble_point(res):
+    g = res.gas.set_index("WELL_NAME").loc["SA-0512H_T"]
+    assert g["pct_rows_below_Pb"] == 100.0
+    assert 45 <= g["gvf_p95_pct"] <= 60
+    d = res.rt[(res.rt["WELL_NAME"] == "SA-0512H_T") & res.rt["rate_steady"]]
+    assert d["below_pb"].all()
+
+
+def test_gas_at_intake_event(res):
+    e = res.events[res.events["type"] == "GAS_AT_INTAKE"]
+    assert set(e["WELL_NAME"]) == {"SA-0512H_T"}      # the only well > 300 psi below Pb
+    assert (e["severity"] == "info").all()
+    assert "free gas at the pump lowers head" in e.iloc[0]["explanation"]
+    assert C.GVF_CAVEAT in e.iloc[0]["evidence"]
+
+
+# --------------------------------------------------------------------------- toggle OFF is inert
+
+def test_wc_toggle_off_changes_nothing(res):
+    """With the correction off every rate is the plain K * X, unchanged by the addendum."""
+    from core.virtual_rate import period_stats, q_col
+    assert q_col("interp") == "Q_interp" and q_col("single") == "Q_single"
+    assert q_col("interp", True) == "Q_M6_interp" and q_col("single", True) == "Q_M6_single"
+    d = res.rt[res.rt["rate_ok"]]
+    assert np.allclose(d["Q_interp"], d["K_interp"] * d["X"])
+    assert np.allclose(d["Q_single"], d["K_single"] * d["X"])
+    assert np.allclose(d["Q_M6_interp"], d["K_dh_interp"] * d["X"] / d["B_LIQ"])
+    w = res.rt[res.rt["WELL_NAME"] == ANALYSED[0]]
+    off, on = period_stats(w, "interp"), period_stats(w, "interp", wc_correction=True)
+    assert off["rate_median"] == pytest.approx(float(w[w["rate_steady"]]["Q_interp"].median()))
+    assert on["rate_median"] == pytest.approx(float(w[w["rate_steady"]]["Q_M6_interp"].median()))
+    assert off["cum_bbl"] != on["cum_bbl"]
 
 
 # --------------------------------------------------------------------------- pump runs and events

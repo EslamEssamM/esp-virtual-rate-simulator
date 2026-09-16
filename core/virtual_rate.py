@@ -9,39 +9,65 @@ import numpy as np
 import pandas as pd
 
 from .calibration import k_interp
+from .pvt import add_pvt_columns
 from .quality import add_elec_basis_flag
 
 K_MODES = {"single": "Q_single", "interp": "Q_interp"}
+K_MODES_WC = {"single": "Q_M6_single", "interp": "Q_M6_interp"}
 SIGNAL_COLS = ["VOLTAGE", "AMPERAGE", "FREQ_FILLED", "FREQUENCY", "PIP", "PDP", "WHP", "dP",
                "MT_F", "INTAKE_TEMP_F", "X", "P_elec_kVA"]
-RATE_COLS = ["Q_single", "Q_interp", "PHI", "K_single", "K_interp"]
+PVT_ROW_COLS = ["WC_FRAC", "BO", "B_LIQ", "PIP_minus_Pb", "gvf_est", "free_gas_scf_stb"]
+WC_EFFECT = {"single": "wc_effect_single_pct", "interp": "wc_effect_interp_pct"}
+RATE_COLS = ["Q_single", "Q_interp", "Q_M6_single", "Q_M6_interp",
+             "wc_effect_single_pct", "wc_effect_interp_pct",
+             "PHI", "K_single", "K_interp", "K_dh_single", "K_dh_interp"]
 
 
-def q_col(k_mode: str) -> str:
-    return K_MODES[k_mode]
+def q_col(k_mode: str, wc_correction: bool = False) -> str:
+    """Column holding the rate for a K mode, with or without the B_liq water-cut correction."""
+    return (K_MODES_WC if wc_correction else K_MODES)[k_mode]
 
 
-def compute_virtual_rate(d: pd.DataFrame, mm: pd.DataFrame, cal: pd.DataFrame) -> pd.DataFrame:
-    """Add elec_basis_ok, K_single, K_interp, Q_single, Q_interp, PHI to the flagged frame.
+def compute_virtual_rate(d: pd.DataFrame, mm: pd.DataFrame, cal: pd.DataFrame,
+                         test_pvt: pd.DataFrame | None = None, lab_pvt: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Add elec_basis_ok, K, Q, PHI and the PVT columns to the flagged frame.
+
+    Two rate families are produced on every rate-bearing row:
+      Q_single / Q_interp        K calibrated straight to the surface test (the default, M1)
+      Q_M6_single / Q_M6_interp  K_dh * X / B_liq(t), the water-cut corrected form (M6)
+    Selecting between them is a display choice made in the app layer; both are always computed.
 
     Rates are computed on rows that are `usable` and on the calibrated electrical basis
     (`rate_ok`). `rate_steady` additionally requires the row to be steady - the default
     selection for charts and statistics. All rows are kept.
     """
     d = add_elec_basis_flag(d, cal)
-    d["K_single"] = np.nan
-    d["K_interp"] = np.nan
-    d["PHI"] = np.nan
+    if test_pvt is not None and lab_pvt is not None:
+        d = add_pvt_columns(d, test_pvt, lab_pvt)
+    for c in ["K_single", "K_interp", "K_dh_single", "K_dh_interp", "PHI"]:
+        d[c] = np.nan
     for _, r in cal.iterrows():
         w = r["WELL_NAME"]
         m = d["WELL_NAME"] == w
+        mw = mm[mm["WELL_NAME"] == w]
         d.loc[m, "K_single"] = r["K_single"]
-        d.loc[m, "K_interp"] = k_interp(d.loc[m, "TIME_STAMP"], mm[mm["WELL_NAME"] == w])
+        d.loc[m, "K_interp"] = k_interp(d.loc[m, "TIME_STAMP"], mw)
+        d.loc[m, "K_dh_single"] = r.get("K_dh_single", np.nan)
+        d.loc[m, "K_dh_interp"] = k_interp(d.loc[m, "TIME_STAMP"], mw, "K_dh")
         d.loc[m, "PHI"] = (d.loc[m, "dP"] / d.loc[m, "P_elec_kVA"]) / r["PHI_base"]
     d["rate_ok"] = d["usable"] & d["elec_basis_ok"] & np.isfinite(d["X"]) & d["K_single"].notna()
     d["rate_steady"] = d["rate_ok"] & d["steady"]
     d["Q_single"] = (d["K_single"] * d["X"]).where(d["rate_ok"])
     d["Q_interp"] = (d["K_interp"] * d["X"]).where(d["rate_ok"])
+    if "B_LIQ" in d.columns:
+        d["Q_M6_single"] = (d["K_dh_single"] * d["X"] / d["B_LIQ"]).where(d["rate_ok"])
+        d["Q_M6_interp"] = (d["K_dh_interp"] * d["X"] / d["B_LIQ"]).where(d["rate_ok"])
+    else:
+        d["Q_M6_single"] = np.nan
+        d["Q_M6_interp"] = np.nan
+    # how much the water-cut correction moves the rate, per K mode (for the KPI tile)
+    d["wc_effect_single_pct"] = (d["Q_M6_single"] / d["Q_single"] - 1) * 100
+    d["wc_effect_interp_pct"] = (d["Q_M6_interp"] / d["Q_interp"] - 1) * 100
     d["PHI"] = d["PHI"].where(d["rate_ok"])
     return d
 
@@ -73,7 +99,7 @@ def resample_rates(d: pd.DataFrame, freq: str = "h", steady_only: bool = True,
 def resample_signals(d: pd.DataFrame, freq: str = "h") -> pd.DataFrame:
     """Medians of the raw signals over ALL rows (pump-off included) plus the fraction of
     pump_off / usable / steady rows per bin. Empty bins are kept as NaN."""
-    cols = [c for c in SIGNAL_COLS if c in d.columns]
+    cols = [c for c in SIGNAL_COLS + PVT_ROW_COLS + ["Pb"] if c in d.columns]
     if d.empty:
         return pd.DataFrame(columns=["TIME_STAMP"] + cols + ["pump_off", "usable", "steady", "temp_unit_c", "n_rows"])
     gi = d.set_index("TIME_STAMP")
@@ -106,8 +132,14 @@ def daily_series(d: pd.DataFrame) -> pd.DataFrame:
         out["temp_c_frac"] = has_t.groupby(has_t.index.floor("D"))["temp_unit_c"].mean().reindex(idx)
         for c in ["VOLTAGE", "AMPERAGE", "PIP", "PDP", "WHP", "dP", "MT_F", "FREQ_FILLED"]:
             out[c] = on.groupby(on.index.floor("D"))[c].median().reindex(idx)
-        for c in ["Q_single", "Q_interp", "PHI", "K_interp"]:
+        for c in ["Q_single", "Q_interp", "Q_M6_single", "Q_M6_interp",
+                  "wc_effect_single_pct", "wc_effect_interp_pct",
+                  "PHI", "K_interp", "WC_FRAC", "B_LIQ", "PIP_minus_Pb", "gvf_est"]:
+            if c not in rs.columns:
+                continue
             out[c] = rs.groupby(rs.index.floor("D"))[c].median().reindex(idx)
+        if "Pb" in gi.columns and gi["Pb"].notna().any():
+            out["Pb"] = float(gi["Pb"].dropna().iloc[0])
         if "run" in gi.columns:
             out["run"] = gi.groupby(day)["run"].agg(lambda x: x.mode().iloc[0]).reindex(idx)
         out["WELL_NAME"] = w
@@ -116,22 +148,24 @@ def daily_series(d: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def cumulative_liquid(d: pd.DataFrame, k_mode: str = "interp", steady_only: bool = True) -> tuple[float, float]:
+def cumulative_liquid(d: pd.DataFrame, k_mode: str = "interp", steady_only: bool = True,
+                      wc_correction: bool = False) -> tuple[float, float]:
     """(cumulative bbl, coverage %) from hourly medians: each hour with a valid rate
     contributes rate/24; hours without a valid rate contribute nothing."""
     r = rate_rows(d, steady_only)
     if r.empty:
         return 0.0, 0.0
-    h = r.set_index("TIME_STAMP")[q_col(k_mode)].resample("h").median().dropna()
+    h = r.set_index("TIME_STAMP")[q_col(k_mode, wc_correction)].resample("h").median().dropna()
     span_h = max((r["TIME_STAMP"].max() - r["TIME_STAMP"].min()).total_seconds() / 3600.0, 1.0)
     return float(h.sum() / 24.0), float(min(len(h) / span_h * 100.0, 100.0))
 
 
-def period_stats(d: pd.DataFrame, k_mode: str = "interp", steady_only: bool = True) -> dict:
+def period_stats(d: pd.DataFrame, k_mode: str = "interp", steady_only: bool = True,
+                 wc_correction: bool = False) -> dict:
     """Aggregate statistics for one well over an already-sliced frame `d`."""
-    q = q_col(k_mode)
+    q = q_col(k_mode, wc_correction)
     r = rate_rows(d, steady_only)
-    cum, cov = cumulative_liquid(d, k_mode, steady_only)
+    cum, cov = cumulative_liquid(d, k_mode, steady_only, wc_correction)
     n = len(d)
     phi = r["PHI"].dropna()
     out = dict(
@@ -156,9 +190,18 @@ def period_stats(d: pd.DataFrame, k_mode: str = "interp", steady_only: bool = Tr
         phi_max=float(phi.max()) if len(phi) else np.nan,
         phi_last=float(phi.iloc[-1]) if len(phi) else np.nan,
         K=float(r["K_interp" if k_mode == "interp" else "K_single"].iloc[-1]) if len(r) else np.nan,
+        K_dh=float(r["K_dh_interp" if k_mode == "interp" else "K_dh_single"].iloc[-1]) if len(r) else np.nan,
     )
     for c in ["VOLTAGE", "AMPERAGE", "FREQ_FILLED", "PIP", "PDP", "WHP", "dP", "MT_F"]:
         out["med_" + c] = float(r[c].median()) if len(r) else np.nan
+    # --- PVT: water cut, B_liq, intake vs bubble point (spec addendum) ---
+    for c in PVT_ROW_COLS:
+        out["med_" + c] = float(r[c].median()) if len(r) and c in r.columns and r[c].notna().any() else np.nan
+    wce = WC_EFFECT[k_mode]
+    out["wc_effect_pct"] = float(r[wce].iloc[-1]) if len(r) and wce in r.columns and r[wce].notna().any() else np.nan
+    out["pct_below_pb"] = float(r["below_pb"].mean() * 100) if len(r) and "below_pb" in r.columns else np.nan
+    out["gvf_p95_pct"] = float(r["gvf_est"].quantile(0.95) * 100) if len(r) and "gvf_est" in r.columns and r["gvf_est"].notna().any() else np.nan
+    out["Pb"] = float(r["Pb"].iloc[-1]) if len(r) and "Pb" in r.columns and r["Pb"].notna().any() else np.nan
     return out
 
 

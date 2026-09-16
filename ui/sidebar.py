@@ -45,6 +45,8 @@ def render_sidebar() -> dict:
                                             "Single: median K of the well's non-suspect tests.")
         freq_label = st.segmented_control("Resolution", list(FREQ_CODE), default="Daily", key="resolution",
                                           help="Hourly/daily are medians of the rows in each bin.")
+        wc_correction = st.toggle("Water-cut correction (B_liq)", value=False, key="wc_correction",
+                                  help=C.WC_CORRECTION_HELP)
         steady_only = st.toggle("Show only steady rows", value=True, key="steady_only",
                                 help="Off: transient rows (rolling CV of I or dP > 5 %) are drawn too, in a lighter tint. "
                                      "K, MAPE and all statistics always use steady rows only.")
@@ -61,7 +63,7 @@ def render_sidebar() -> dict:
              start=str(start), end=str(end),
              k_mode=K_MODE_CODE.get(k_label or "Interpolated K", "interp"),
              freq=FREQ_CODE.get(freq_label or "Daily", "D"),
-             steady_only=bool(steady_only), t0=t0, t1=t1)
+             steady_only=bool(steady_only), wc_correction=bool(wc_correction), t0=t0, t1=t1)
     st.session_state["filters"] = f
     return f
 

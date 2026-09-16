@@ -6,11 +6,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from core import config as C
 from core.calibration import k_interp
 from core.virtual_rate import q_col
 from ui.data import FREQ_LABEL
-from ui.theme import (CATEGORY_COLORS, CATEGORY_LABELS, CRITICAL, GOOD, GRID, INK2, METHOD_COLORS, METHOD_LABELS,
-                      MUTED, SERIOUS, TEST_MARK, WARNING, base_layout, well_color, well_light)
+from ui.theme import (BASE_METHODS, CATEGORY_COLORS, CATEGORY_LABELS, CRITICAL, GOOD, GRID, INK2, METHOD_COLORS,
+                      METHOD_LABELS, MUTED, SERIOUS, TEST_MARK, WARNING, base_layout, well_color, well_light)
 
 CATEGORY_ORDER = list(CATEGORY_COLORS)
 
@@ -35,9 +36,10 @@ def _add_intervals(fig, intervals, color, opacity, label=None, row="all", positi
 
 
 def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, steady_only: bool, k_mode: str,
-               shade: dict, height: int = 480, zoom: tuple | None = None, title: str | None = None) -> go.Figure:
+               shade: dict, height: int = 480, zoom: tuple | None = None, title: str | None = None,
+               wc_correction: bool = False) -> go.Figure:
     """Q_virtual (top) and PHI (bottom) with well tests, gaps, uncalibrated basis and run markers."""
-    q = q_col(k_mode)
+    q = q_col(k_mode, wc_correction)
     color = well_color(well)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.05)
 
@@ -55,7 +57,8 @@ def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, 
                                 hovertemplate="%{y:,.0f} BFPD<extra>transient</extra>", row=1, col=1)
     elif not series.empty:
         fig.add_scatter(x=series["TIME_STAMP"], y=series[q], mode="lines",
-                        name=f"Q virtual ({FREQ_LABEL[freq]}{'' if steady_only else ', incl. transient'})",
+                        name=("Q virtual, B_liq corrected" if wc_correction else "Q virtual")
+                             + f" ({FREQ_LABEL[freq]}{'' if steady_only else ', incl. transient'})",
                         line=dict(color=color, width=1.8), connectgaps=False,
                         hovertemplate="%{y:,.0f} BFPD<extra>Q virtual</extra>", row=1, col=1)
 
@@ -179,16 +182,16 @@ def k_chart(well: str, mm_w: pd.DataFrame, cal_row: pd.Series | None, start, end
     return fig
 
 
-def validation_chart(v: pd.DataFrame, height: int = 420) -> go.Figure:
+def validation_chart(v: pd.DataFrame, height: int = 420, methods: list[str] | None = None) -> go.Figure:
     v = v.sort_values(["WELL_NAME", "TEST_TS"]).reset_index(drop=True)
     labels = [f"{w.replace('SA-', '').replace('_T', '')}<br>{t:%b %y}" for w, t in zip(v["WELL_NAME"], v["TEST_TS"])]
     fig = go.Figure()
-    for m in ["M1_LOO", "M2_WALK", "BASE_LAST_TEST"]:
+    for m in (methods or BASE_METHODS):
         fig.add_bar(x=labels, y=v["APE_" + m], name=METHOD_LABELS[m], marker_color=METHOD_COLORS[m],
                     marker_line=dict(width=0), hovertemplate="%{y:.1f} %<extra>" + METHOD_LABELS[m] + "</extra>")
     for i, r in v.iterrows():
         if r["suspect"]:
-            fig.add_annotation(x=labels[i], y=max(r[["APE_M1_LOO", "APE_M2_WALK", "APE_BASE_LAST_TEST"]].max(), 0),
+            fig.add_annotation(x=labels[i], y=max(r[["APE_" + m for m in (methods or BASE_METHODS)]].max(), 0),
                                text="suspect", showarrow=False, yshift=12, font=dict(size=12, color=CRITICAL))
     fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05)
     base_layout(fig, height=height)
@@ -241,4 +244,53 @@ def whatif_chart(well: str, series: pd.DataFrame, k_ref: float, k_new: float, fr
                         hovertemplate="what-if %{y:,.0f} BFPD (APE %{customdata:.1f} %)<extra></extra>")
     base_layout(fig, height=height)
     fig.update_yaxes(title_text="BFPD", rangemode="tozero")
+    return fig
+
+
+# --------------------------------------------------------------------------- PVT (spec addendum)
+
+def watercut_chart(well: str, test_pvt: pd.DataFrame, daily: pd.DataFrame, height: int = 320) -> go.Figure:
+    """Water cut at each well test (points) and the interpolated B_liq actually used (line)."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    color = well_color(well)
+    if daily is not None and len(daily) and "B_LIQ" in daily.columns:
+        g = daily.dropna(subset=["B_LIQ"])
+        fig.add_scatter(x=g["day"], y=g["B_LIQ"], mode="lines", name="B_liq used (interpolated)",
+                        line=dict(color=color, width=2), connectgaps=False,
+                        hovertemplate="B_liq %{y:.4f}<extra></extra>", secondary_y=True)
+    if test_pvt is not None and len(test_pvt):
+        fig.add_scatter(x=test_pvt["TEST_TS"], y=test_pvt["WC_FRAC"] * 100, mode="markers+lines",
+                        name="Water cut at test", line=dict(color=MUTED, width=1, dash="dot"),
+                        marker=dict(symbol="circle", size=11, color=MUTED, line=dict(width=2, color="white")),
+                        hovertemplate="water cut %{y:.1f} %<extra></extra>", secondary_y=False)
+        fig.add_scatter(x=test_pvt["TEST_TS"], y=test_pvt["B_LIQ"], mode="markers", name="B_liq at test",
+                        marker=dict(symbol="diamond", size=13, color=TEST_MARK, line=dict(width=2.5, color="white")),
+                        hovertemplate="B_liq %{y:.4f}<extra></extra>", secondary_y=True)
+    base_layout(fig, height=height, title=well)
+    fig.update_yaxes(title_text="water cut, %", secondary_y=False, rangemode="tozero")
+    fig.update_yaxes(title_text="B_liq, rb/stb", secondary_y=True, showgrid=False)
+    return fig
+
+
+def intake_vs_pb_chart(well: str, s: pd.DataFrame, pb: float, gas: dict | None = None,
+                       height: int = 360) -> go.Figure:
+    """Intake pressure against the bubble point, with the estimated gas fraction on a second axis."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    color = well_color(well)
+    if len(s):
+        fig.add_scatter(x=s["TIME_STAMP"], y=s["PIP"], mode="lines", name="PIP",
+                        line=dict(color=color, width=1.6), connectgaps=False,
+                        hovertemplate="PIP %{y:,.0f} psi<extra></extra>", secondary_y=False)
+        if "gvf_est" in s.columns and s["gvf_est"].notna().any():
+            fig.add_scatter(x=s["TIME_STAMP"], y=s["gvf_est"] * 100, mode="lines",
+                            name=f"Estimated gas fraction at intake (gas gravity {C.GAS_GRAVITY} assumed)",
+                            line=dict(color=SERIOUS, width=1.4, dash="dot"), connectgaps=False,
+                            hovertemplate="GVF ~%{y:.0f} %<extra></extra>", secondary_y=True)
+    if pb is not None and np.isfinite(pb):
+        fig.add_hline(y=pb, line=dict(color=CRITICAL, width=2, dash="dash"),
+                      annotation_text=f"bubble point {pb:,.0f} psi", annotation_position="top left",
+                      annotation_font=dict(size=12, color=CRITICAL), secondary_y=False)
+    base_layout(fig, height=height)
+    fig.update_yaxes(title_text="pressure, psi", secondary_y=False, rangemode="tozero")
+    fig.update_yaxes(title_text="estimated GVF, %", secondary_y=True, showgrid=False, rangemode="tozero")
     return fig

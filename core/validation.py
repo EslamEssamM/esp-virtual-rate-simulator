@@ -17,9 +17,13 @@ import pandas as pd
 
 METHODS = {
     "M1_LOO": "M1 single-K (leave-one-out)",
+    "M6_LOO": "M6 water-cut corrected (leave-one-out)",
     "M2_WALK": "M2 walk-forward K",
+    "M6_WALK": "M6 water-cut corrected, walk-forward",
     "BASE_LAST_TEST": "Baseline: last test carried forward",
 }
+# methods that use the B_liq water-cut correction; shown next to their uncorrected twin
+WC_METHODS = ["M6_LOO", "M6_WALK"]
 
 
 def validate(mm: pd.DataFrame, tests: pd.DataFrame) -> pd.DataFrame:
@@ -34,14 +38,22 @@ def validate(mm: pd.DataFrame, tests: pd.DataFrame) -> pd.DataFrame:
             prev_all = all_tests[all_tests["TEST_TS"] < r["TEST_TS"]]
             out = dict(WELL_NAME=w, TEST_TS=r["TEST_TS"], Q_TEST=r["Q_LIQ"], X=r["RT_X"], K=r["K"],
                        suspect=bool(r["suspect"]))
+            b = r.get("B_LIQ", np.nan)
+            out["B_LIQ"] = b
+            out["K_dh"] = r.get("K_dh", np.nan)
             out["Q_M1_LOO"] = others["K"].median() * r["RT_X"] if len(others) else np.nan
             out["Q_M2_WALK"] = prev["K"].iloc[-1] * r["RT_X"] if len(prev) else np.nan
+            # M6: calibrate downhole, then convert back to surface at this test's B_liq
+            out["Q_M6_LOO"] = (others["K_dh"].median() * r["RT_X"] / b
+                               if len(others) and pd.notna(b) else np.nan)
+            out["Q_M6_WALK"] = (prev["K_dh"].iloc[-1] * r["RT_X"] / b
+                                if len(prev) and pd.notna(b) else np.nan)
             out["Q_BASE_LAST_TEST"] = prev_all["Q_LIQ"].iloc[-1] if len(prev_all) else np.nan
             out["BASE_TEST_TS"] = prev_all["TEST_TS"].iloc[-1] if len(prev_all) else pd.NaT
             res.append(out)
     v = pd.DataFrame(res)
     if v.empty:
-        cols = ["WELL_NAME", "TEST_TS", "Q_TEST", "X", "K", "suspect", "BASE_TEST_TS"]
+        cols = ["WELL_NAME", "TEST_TS", "Q_TEST", "X", "K", "K_dh", "B_LIQ", "suspect", "BASE_TEST_TS"]
         return pd.DataFrame(columns=cols + [f"{p}_{m}" for m in METHODS for p in ("Q", "APE")])
     for mth in METHODS:
         v["APE_" + mth] = (v["Q_" + mth] - v["Q_TEST"]).abs() / v["Q_TEST"] * 100
