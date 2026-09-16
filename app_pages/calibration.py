@@ -151,4 +151,8 @@ with wcols[0]:
         "APE_whatif": st.column_config.NumberColumn("APE %", format="%.1f")})
 with wcols[1]:
     series = D.rate_series(w, f["start"], f["end"], "D" if f["freq"] == "30min" else f["freq"], True)
-    st.plotly_chart(whatif_chart(w, series, k_ref, k_new, f["freq"]), key="whatif_chart", config=dict(displaylogo=False))
+    tests_w = D.tests_in_range(w, f["start"], f["end"])
+    st.plotly_chart(whatif_chart(w, series, k_ref, k_new, f["freq"], tests=tests_w, whatif_at_tests=t),
+                    key="whatif_chart", config=dict(displaylogo=False))
+    st.caption("Filled diamonds are the measured tests; open diamonds are what the what-if K predicts at the same SCADA state. "
+               "Slide K until the open diamonds sit on the filled ones.")

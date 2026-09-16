@@ -198,7 +198,31 @@ def validation_chart(v: pd.DataFrame, height: int = 420) -> go.Figure:
     return fig
 
 
-def whatif_chart(well: str, series: pd.DataFrame, k_ref: float, k_new: float, freq: str, height: int = 320) -> go.Figure:
+def _add_test_markers(fig, tests: pd.DataFrame, row=None, col=None):
+    """Measured well tests: open circle = no SCADA match, ink diamond = used for K, red x = suspect."""
+    if tests is None or len(tests) == 0:
+        return
+    kw = dict(row=row, col=col) if row else {}
+    other = tests[tests["MATCH"] != "MATCHED"]
+    good = tests[(tests["MATCH"] == "MATCHED") & ~tests["suspect"].fillna(False).astype(bool)]
+    bad = tests[(tests["MATCH"] == "MATCHED") & tests["suspect"].fillna(False).astype(bool)]
+    if len(other):
+        fig.add_scatter(x=other["TEST_TS"], y=other["Q_LIQ"], mode="markers", name="Well test (no SCADA match)",
+                        marker=dict(symbol="circle-open", size=11, color=MUTED, line=dict(width=2)),
+                        customdata=other["MATCH"], hovertemplate="test %{y:,.0f} BFPD (%{customdata})<extra></extra>", **kw)
+    if len(good):
+        fig.add_scatter(x=good["TEST_TS"], y=good["Q_LIQ"], mode="markers", name="Matched test (used for K)",
+                        marker=dict(symbol="diamond", size=15, color=TEST_MARK, line=dict(width=2.5, color="white")),
+                        customdata=good["K"], hovertemplate="test %{y:,.0f} BFPD, K=%{customdata:.2f}<extra></extra>", **kw)
+    if len(bad):
+        fig.add_scatter(x=bad["TEST_TS"], y=bad["Q_LIQ"], mode="markers", name="Suspect test (excluded)",
+                        marker=dict(symbol="x", size=16, color=CRITICAL, line=dict(width=2, color=CRITICAL)),
+                        customdata=bad["K"], hovertemplate="suspect test %{y:,.0f} BFPD, K=%{customdata:.2f}<extra></extra>", **kw)
+
+
+def whatif_chart(well: str, series: pd.DataFrame, k_ref: float, k_new: float, freq: str,
+                 tests: pd.DataFrame | None = None, whatif_at_tests: pd.DataFrame | None = None,
+                 height: int = 360) -> go.Figure:
     fig = go.Figure()
     color = WELL_COLORS[well]
     if not series.empty:
@@ -208,6 +232,13 @@ def whatif_chart(well: str, series: pd.DataFrame, k_ref: float, k_new: float, fr
         fig.add_scatter(x=series["TIME_STAMP"], y=k_new * series["X"], mode="lines",
                         name=f"What-if K {k_new:.2f}", line=dict(color=color, width=2), connectgaps=False,
                         hovertemplate="%{y:,.0f} BFPD<extra>what-if</extra>")
+    _add_test_markers(fig, tests)
+    if whatif_at_tests is not None and len(whatif_at_tests):
+        fig.add_scatter(x=whatif_at_tests["TEST_TS"], y=whatif_at_tests["Q_whatif"], mode="markers",
+                        name="What-if prediction at test",
+                        marker=dict(symbol="diamond-open", size=15, color=color, line=dict(width=2.5)),
+                        customdata=whatif_at_tests["APE_whatif"],
+                        hovertemplate="what-if %{y:,.0f} BFPD (APE %{customdata:.1f} %)<extra></extra>")
     base_layout(fig, height=height)
     fig.update_yaxes(title_text="BFPD", rangemode="tozero")
     return fig
