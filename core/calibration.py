@@ -57,13 +57,32 @@ def calibration_table(mm: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def pip_baselines(mm: pd.DataFrame, runs: pd.DataFrame | None, rt_start, rt_end) -> pd.DataFrame:
+    """One row per (well, pump run): run_start/run_end, PIP_base = median SCADA PIP at the first
+    non-suspect matched test inside that run, and base_test_ts. Runs come from the ESP master
+    dataset (install date of the current run); without it, the whole history is one run."""
+    rows = []
+    far_past, far_future = pd.Timestamp(rt_start) - pd.Timedelta(days=1), pd.Timestamp(rt_end) + pd.Timedelta(days=1)
+    for w, g in mm[~mm["suspect"]].groupby("WELL_NAME"):
+        inst = pd.NaT
+        if runs is not None and w in runs["WELL_NAME"].values:
+            inst = runs.set_index("WELL_NAME").loc[w, "install_date"]
+        bounds = [("previous", far_past, inst), ("current", inst, far_future)] if pd.notna(inst) else [("current", far_past, far_future)]
+        for run, a, b in bounds:
+            t = g[(g["TEST_TS"] >= a) & (g["TEST_TS"] < b)].sort_values("TEST_TS")
+            rows.append(dict(WELL_NAME=w, run=run, run_start=a, run_end=b,
+                             PIP_base=float(t["RT_PIP"].iloc[0]) if len(t) else np.nan,
+                             base_test_ts=t["TEST_TS"].iloc[0] if len(t) else pd.NaT, n_tests=int(len(t))))
+    return pd.DataFrame(rows)
+
+
 def k_interp(times: pd.Series, cal_tests: pd.DataFrame) -> np.ndarray:
     """K at each timestamp, linear between non-suspect tests, flat outside."""
     c = cal_tests[~cal_tests["suspect"]].sort_values("TEST_TS")
     if c.empty:
         return np.full(len(times), np.nan)
-    tnum = pd.to_datetime(times).astype("int64").to_numpy()
-    cnum = c["TEST_TS"].astype("int64").to_numpy()
+    tnum = pd.to_datetime(times).astype("datetime64[ns]").astype("int64").to_numpy()
+    cnum = c["TEST_TS"].astype("datetime64[ns]").astype("int64").to_numpy()
     return np.interp(tnum, cnum, c["K"].to_numpy())
 
 

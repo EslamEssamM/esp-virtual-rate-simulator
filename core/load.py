@@ -67,3 +67,53 @@ def load_tests(path: Path | str = C.WT_FILE, wells: list[str] = C.WELLS) -> pd.D
     out = out.sort_values(["WELL_NAME", "TEST_TS"], kind="mergesort").reset_index(drop=True)
     out["TEST_ID"] = out["WELL_NAME"] + " @ " + out["TEST_TS"].dt.strftime("%Y-%m-%d %H:%M")
     return out
+
+
+ESP_COLUMNS = ["PUMP_MANUFACTURER", "CANONICAL_MODEL", "NUMBER_OF_STAGES", "INSTALL_TOP_DEPTH_FT",
+               "DAYS_FROM_INSTALLATION", "IS_ACTIVE_CURRENT_RUN"]
+
+
+def load_esp_master(path: Path | str = C.ESP_MASTER_FILE, wells: list[str] = C.WELLS) -> pd.DataFrame:
+    """Per-test pump-run metadata for the selected wells (ESP_MASTER_DATASET.csv).
+
+    DAYS_FROM_INSTALLATION < 0 (or IS_ACTIVE_CURRENT_RUN False) marks a test from a previous run.
+    """
+    t = pd.read_csv(path, low_memory=False)
+    t = t[t["WELL_NAME"].isin(wells)].copy()
+    out = pd.DataFrame({"WELL_NAME": t["WELL_NAME"].astype(str).values,
+                        "TEST_TS": pd.to_datetime(t["TEST_DATE_TIME"]).values})
+    for c in ESP_COLUMNS:
+        out[c] = t[c].values if c in t.columns else np.nan
+    for c in ["NUMBER_OF_STAGES", "INSTALL_TOP_DEPTH_FT", "DAYS_FROM_INSTALLATION"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out["IS_ACTIVE_CURRENT_RUN"] = out["IS_ACTIVE_CURRENT_RUN"].astype(str).str.lower().isin(["true", "1", "yes"])
+    out["run"] = np.where(out["IS_ACTIVE_CURRENT_RUN"] & (out["DAYS_FROM_INSTALLATION"] >= 0), "current", "previous")
+    out["INSTALL_DATE"] = out["TEST_TS"] - pd.to_timedelta(out["DAYS_FROM_INSTALLATION"], unit="D")
+    return out.sort_values(["WELL_NAME", "TEST_TS"], kind="mergesort").reset_index(drop=True)
+
+
+def pump_runs(esp: pd.DataFrame) -> pd.DataFrame:
+    """One row per well describing the CURRENT pump run: install date (run boundary), pump
+    manufacturer/model/stages/depth and how many tests fall in the current vs previous run."""
+    rows = []
+    for w, g in esp.groupby("WELL_NAME"):
+        cur = g[g["run"] == "current"]
+        ref = cur if len(cur) else g
+        rows.append(dict(
+            WELL_NAME=w,
+            install_date=ref["INSTALL_DATE"].median().floor("D") if ref["INSTALL_DATE"].notna().any() else pd.NaT,
+            PUMP_MANUFACTURER=ref["PUMP_MANUFACTURER"].mode().iloc[0] if ref["PUMP_MANUFACTURER"].notna().any() else "",
+            CANONICAL_MODEL=ref["CANONICAL_MODEL"].mode().iloc[0] if ref["CANONICAL_MODEL"].notna().any() else "",
+            NUMBER_OF_STAGES=int(ref["NUMBER_OF_STAGES"].median()) if ref["NUMBER_OF_STAGES"].notna().any() else np.nan,
+            INSTALL_TOP_DEPTH_FT=float(ref["INSTALL_TOP_DEPTH_FT"].median()) if ref["INSTALL_TOP_DEPTH_FT"].notna().any() else np.nan,
+            n_tests_current=int(len(cur)), n_tests_previous=int(len(g) - len(cur)),
+        ))
+    return pd.DataFrame(rows)
+
+
+def run_label(times: pd.Series, well: pd.Series, runs: pd.DataFrame) -> pd.Series:
+    """'current' if the timestamp is on/after the well's current-run install date, else 'previous'."""
+    inst = runs.set_index("WELL_NAME")["install_date"]
+    boundary = well.map(inst)
+    return pd.Series(np.where(boundary.notna() & (pd.to_datetime(times) >= boundary), "current", "previous"),
+                     index=times.index)

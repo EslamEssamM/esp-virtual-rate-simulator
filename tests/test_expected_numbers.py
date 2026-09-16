@@ -9,14 +9,15 @@ EXPECTED_K = {"SA-0162_T": 119.3, "SA-0500_T": 13.2, "SA-0512H_T": 22.1, "SA-099
 EXPECTED_SUSPECT = {("SA-0162_T", "2026-01-15", 539.0), ("SA-0500_T", "2026-04-26", 1761.0)}
 
 # Spec table: M1 8.4 / 3.8, M2 10.6 / 5.0, baseline 13.7 / 5.4.
-# The baseline expectation cannot be reproduced from the CSV shipped with the spec (it has 72 tests
-# for these wells, not 69, and the reference vr_pipeline.py itself yields 12.8 / 5.0 on it).
-# M1 and M2 are asserted against the spec; the baseline is asserted against the reference output.
+# Ruling: every MAPE is averaged over the same test set - the 13 tests that have an M1
+# leave-one-out value (SA-0991H's single test is excluded from all three) - and n is reported.
 EXPECTED_MAPE = {
     "M1_LOO": (8.4, 3.8),
     "M2_WALK": (10.6, 5.0),
-    "BASE_LAST_TEST": (12.8, 5.0),
+    "BASE_LAST_TEST": (13.7, 5.4),
 }
+EXPECTED_PUMPS = {"SA-0162_T": ("D1150N", 157), "SA-0500_T": ("B538-1500", 148),
+                  "SA-0512H_T": ("D1150N", 254), "SA-0991H_T": ("WG-4000", 145)}
 
 
 def test_dataset_shape(res):
@@ -69,6 +70,46 @@ def test_mape(res, method, exp):
     row = res.mape_overall.set_index("method").loc[method]
     assert row["MAPE_all"] == pytest.approx(exp[0], rel=REL), f"{method} all: {row['MAPE_all']:.2f} vs {exp[0]}"
     assert row["MAPE_excl_suspect"] == pytest.approx(exp[1], rel=REL), f"{method} excl: {row['MAPE_excl_suspect']:.2f} vs {exp[1]}"
+
+
+def test_mape_common_test_set(res):
+    row = res.mape_overall.set_index("method")
+    assert row["n_all"].tolist() == [13, 10, 13]
+    assert row["n_excl_suspect"].tolist() == [11, 8, 11]
+
+
+@pytest.mark.parametrize("well,exp", list(EXPECTED_PUMPS.items()))
+def test_pump_runs(res, well, exp):
+    r = res.runs.set_index("WELL_NAME").loc[well]
+    assert (r["CANONICAL_MODEL"], int(r["NUMBER_OF_STAGES"])) == exp
+
+
+def test_run_boundaries(res):
+    inst = res.runs.set_index("WELL_NAME")["install_date"]
+    assert inst["SA-0500_T"].strftime("%Y-%m") == "2023-05"
+    assert inst["SA-0512H_T"].strftime("%Y-%m") == "2025-05"
+    assert inst["SA-0991H_T"].strftime("%Y-%m") == "2026-06"
+    assert inst["SA-0162_T"].year == 2017
+    # SA-0991H SCADA (Apr-May 2024) belongs entirely to the previous run
+    assert (res.rt.loc[res.rt["WELL_NAME"] == "SA-0991H_T", "run"] == "previous").all()
+    assert (res.rt.loc[res.rt["WELL_NAME"] == "SA-0162_T", "run"] == "current").all()
+
+
+def test_expected_events(res):
+    e = res.events
+
+    def has(well, etype, start, end):
+        m = (e["WELL_NAME"] == well) & (e["type"] == etype) & (e["end"] >= start) & (e["start"] <= end)
+        return bool(m.any())
+
+    assert has("SA-0162_T", "BACKPRESSURE", "2025-10-15", "2025-12-01")
+    assert has("SA-0162_T", "PHI_DRIFT", "2025-11-01", "2026-02-28")
+    assert has("SA-0162_T", "SUSPECT_TEST", "2026-01-15", "2026-01-16")
+    assert has("SA-0162_T", "VOLTAGE_BASIS_CHANGE", "2024-12-01", "2024-12-31")
+    assert has("SA-0162_T", "TEMP_UNIT_SWITCH", "2025-09-01", "2025-11-01")
+    assert has("SA-0512H_T", "VOLTAGE_STEP", "2025-08-01", "2025-08-31")
+    assert has("SA-0500_T", "LOW_PIP_TREND", "2025-01-01", "2025-12-31")
+    assert has("SA-0512H_T", "LOW_PIP_TREND", "2025-01-01", "2025-12-31")
 
 
 def test_validation_counts(res):

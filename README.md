@@ -55,16 +55,41 @@ Health indicator (Camilleri PHI concept):
 PHI = (dP / (sqrt(3) * V * I)) / (same ratio at calibration)
 ```
 
-1.0 = as calibrated; a sustained drift of more than 5 % means recalibration is recommended.
+PHI is the ratio of dP/(sqrt(3) V I) to its value at calibration. It moves when the operating
+point changes as well as when the pump degrades. PHI ~ 1 means nothing has changed since
+calibration; a sustained drift (7-day median outside 0.95-1.05 for 7 days) means recalibrate or
+investigate.
 
 Two K variants are exposed: `K_single` (median K of the well's non-suspect matched tests) and
 `K_interp` (linear in time between non-suspect tests, flat outside). Suspect tests are those
 whose K has a robust z-score above 3.5 within the well.
 
+## Inputs (read-only, in `data/`)
+
+1. `AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx` - 30-min SCADA for the 4 wells.
+2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv` - well tests (72 for the 4 wells).
+3. `ESP_MASTER_DATASET.csv` - pump-run metadata per test (manufacturer, model, stages, depth,
+   days from installation). It gives the current run's install date, drawn as a dashed marker on
+   the rate charts, and resets the LOW_PIP_TREND baseline per run.
+
+## Validation
+
+MAPE of the three predictions is averaged over the same test set - the 13 matched tests that
+have a leave-one-out value (SA-0991H_T's single test is excluded) - and n is reported:
+
+| method | MAPE all | MAPE excl. suspect |
+|---|---|---|
+| M1 single-K (leave-one-out) | 8.4 | 3.8 |
+| M2 walk-forward K | 10.6 | 5.0 |
+| Baseline last test carried forward | 13.7 | 5.4 |
+
 ## Layout
 
 ```
-app.py              Streamlit UI (six pages, no computation)
+app.py              Streamlit entry point (sidebar + navigation, no computation)
+app_pages/          one script per page
+ui/                 presentation helpers: cached data access, sidebar, Plotly chart builders
+.streamlit/         theme
 core/
   config.py         thresholds and file paths
   load.py           read the two input files, coerce types

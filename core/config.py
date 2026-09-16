@@ -56,3 +56,14 @@ LOW_PIP_ROLL_DAYS = 30
 # Camilleri constant: 58847 * 746 / sqrt(3) ... used only for the efficiency caveat
 # implied overall efficiency = K * 1000 / 78818
 EFF_DENOM = 78818.0
+
+# --- third read-only input: pump-run metadata (ruling 3) ---
+ESP_MASTER_FILE = DATA_DIR / "ESP_MASTER_DATASET.csv"
+
+# --- voltage tiers (ruling 2) ---
+VOLT_STEP_PCT = 10            # 10-30 % daily-median change -> VOLTAGE_STEP (info)
+
+# --- PHI wording (ruling 5): use verbatim wherever PHI is displayed ---
+PHI_HELP = ("Ratio of dP/(sqrt(3)*V*I) to its value at calibration. It moves when the operating point "
+            "changes as well as when the pump degrades. PHI ~ 1 means nothing has changed since "
+            "calibration; a sustained drift means recalibrate or investigate.")

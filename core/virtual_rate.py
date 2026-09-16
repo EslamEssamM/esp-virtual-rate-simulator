@@ -51,18 +51,37 @@ def rate_rows(d: pd.DataFrame, steady_only: bool = True) -> pd.DataFrame:
     return d[d["rate_steady"]] if steady_only else d[d["rate_ok"]]
 
 
-def resample_rates(d: pd.DataFrame, freq: str = "h", steady_only: bool = True) -> pd.DataFrame:
+def resample_rates(d: pd.DataFrame, freq: str = "h", steady_only: bool = True,
+                   keep_empty_bins: bool = False) -> pd.DataFrame:
     """Per-well median of rates and signals at `freq` ('30min', 'h', 'D').
 
-    Bins without data are absent (not filled), so gaps stay visible in charts.
+    By default bins without data are dropped (compact tables). With `keep_empty_bins` they are
+    kept as NaN so a line chart breaks at gaps instead of bridging them.
     """
     r = rate_rows(d, steady_only)
     cols = RATE_COLS + [c for c in SIGNAL_COLS if c in r.columns]
-    out = (r.set_index("TIME_STAMP").groupby("WELL_NAME")[cols]
-           .resample(freq).median().dropna(subset=["Q_single"], how="all"))
+    if r.empty:
+        return pd.DataFrame(columns=["WELL_NAME", "TIME_STAMP"] + cols + ["n_rows"])
+    out = r.set_index("TIME_STAMP").groupby("WELL_NAME")[cols].resample(freq).median()
     n = r.set_index("TIME_STAMP").groupby("WELL_NAME")["Q_single"].resample(freq).size().rename("n_rows")
-    out = out.join(n).reset_index()
-    return out
+    out = out.join(n)
+    if not keep_empty_bins:
+        out = out.dropna(subset=["Q_single"], how="all")
+    return out.reset_index()
+
+
+def resample_signals(d: pd.DataFrame, freq: str = "h") -> pd.DataFrame:
+    """Medians of the raw signals over ALL rows (pump-off included) plus the fraction of
+    pump_off / usable / steady rows per bin. Empty bins are kept as NaN."""
+    cols = [c for c in SIGNAL_COLS if c in d.columns]
+    if d.empty:
+        return pd.DataFrame(columns=["TIME_STAMP"] + cols + ["pump_off", "usable", "steady", "temp_unit_c", "n_rows"])
+    gi = d.set_index("TIME_STAMP")
+    out = gi[cols].resample(freq).median()
+    for c in ["pump_off", "usable", "steady", "temp_unit_c"]:
+        out[c] = gi[c].astype(float).resample(freq).mean()
+    out["n_rows"] = gi["VOLTAGE"].resample(freq).size()
+    return out.reset_index()
 
 
 def daily_series(d: pd.DataFrame) -> pd.DataFrame:
@@ -89,6 +108,8 @@ def daily_series(d: pd.DataFrame) -> pd.DataFrame:
             out[c] = on.groupby(on.index.floor("D"))[c].median().reindex(idx)
         for c in ["Q_single", "Q_interp", "PHI", "K_interp"]:
             out[c] = rs.groupby(rs.index.floor("D"))[c].median().reindex(idx)
+        if "run" in gi.columns:
+            out["run"] = gi.groupby(day)["run"].agg(lambda x: x.mode().iloc[0]).reindex(idx)
         out["WELL_NAME"] = w
         out.index.name = "day"
         frames.append(out.reset_index())
@@ -149,3 +170,48 @@ def slice_period(d: pd.DataFrame, well: str, start, end) -> pd.DataFrame:
         end = end + pd.Timedelta(days=1)
     m = (d["WELL_NAME"] == well) & (d["TIME_STAMP"] >= start) & (d["TIME_STAMP"] < end)
     return d[m]
+
+
+# --------------------------------------------------------------------------- intervals for chart shading
+
+def _day_runs(days: pd.Series, mask: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[(start_day, end_day_exclusive)] for consecutive True days."""
+    out = []
+    m = mask.to_numpy(dtype=bool)
+    d = pd.to_datetime(days).to_numpy()
+    start = None
+    for i in range(len(m)):
+        if m[i] and start is None:
+            start = d[i]
+        if start is not None and (not m[i] or i == len(m) - 1):
+            end = d[i] if not m[i] else d[i] + np.timedelta64(1, "D")
+            out.append((pd.Timestamp(start), pd.Timestamp(end)))
+            start = None
+    return out
+
+
+def uncalibrated_intervals(daily: pd.DataFrame, d: pd.DataFrame, well: str) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Days where usable rows exist but most of them are off the calibrated voltage basis."""
+    g = d[(d["WELL_NAME"] == well) & d["usable"]]
+    if g.empty:
+        return []
+    frac = (~g["elec_basis_ok"]).groupby(g["TIME_STAMP"].dt.floor("D")).mean()
+    dd = daily[daily["WELL_NAME"] == well]
+    f = dd["day"].map(frac).fillna(0.0)
+    return _day_runs(dd["day"], (f > 0.5) & (dd["n_usable"] > 0))
+
+
+def gap_intervals(events: pd.DataFrame, well: str) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    e = events[(events["WELL_NAME"] == well) & (events["type"] == "SCADA_GAP")]
+    return [(r["start"], r["end"]) for _, r in e.iterrows()]
+
+
+def pump_off_intervals(events: pd.DataFrame, well: str) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    e = events[(events["WELL_NAME"] == well) & (events["type"] == "PUMP_OFF")]
+    return [(r["start"], r["end"]) for _, r in e.iterrows()]
+
+
+def rate_with_k(d: pd.DataFrame, k: float, steady_only: bool = True) -> pd.Series:
+    """Virtual rate for an arbitrary K (what-if), on the rows carrying a rate."""
+    r = rate_rows(d, steady_only)
+    return k * r["X"]

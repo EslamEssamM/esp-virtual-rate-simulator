@@ -13,6 +13,7 @@ EVENT_TYPES = {
     "SCADA_GAP": "info",
     "PUMP_OFF": "warning",
     "VOLTAGE_BASIS_CHANGE": "warning",
+    "VOLTAGE_STEP": "info",
     "TEMP_UNIT_SWITCH": "info",
     "RATE_STEP": "warning",
     "PHI_DRIFT": "critical",
@@ -83,21 +84,31 @@ def pump_off_events(d: pd.DataFrame, min_hours: float = C.PUMP_OFF_HOURS) -> lis
 
 # --------------------------------------------------------------------------- daily rules
 
-def voltage_basis_changes(daily: pd.DataFrame, pct: float = C.VOLT_CHANGE_PCT) -> list[dict]:
+def voltage_basis_changes(daily: pd.DataFrame, pct: float = C.VOLT_CHANGE_PCT,
+                          step_pct: float = C.VOLT_STEP_PCT) -> list[dict]:
+    """Two tiers on the daily median VOLTAGE between consecutive days with data:
+    > `pct` (30 %) -> VOLTAGE_BASIS_CHANGE (warning, K not valid across it);
+    `step_pct`..`pct` (10-30 %) -> VOLTAGE_STEP (info)."""
     ev = []
     for w, g in daily.groupby("WELL_NAME", sort=False):
         v = g.dropna(subset=["VOLTAGE"]).set_index("day")["VOLTAGE"]
         v = v[v > 0]
         chg = v.pct_change() * 100
-        for day in chg.index[chg.abs() > pct]:
+        for day in chg.index[chg.abs() > step_pct]:
             prev_day = v.index[v.index.get_loc(day) - 1]
-            b, a = v.loc[prev_day], v.loc[day]
+            b, a, c = v.loc[prev_day], v.loc[day], chg.loc[day]
             basis = f"{'LV' if b < C.LV_MV_SPLIT_V else 'MV'} -> {'LV' if a < C.LV_MV_SPLIT_V else 'MV'}"
-            ev.append(_event(w, prev_day, day, "VOLTAGE_BASIS_CHANGE",
-                             f"Daily median VOLTAGE moved {b:.0f} V -> {a:.0f} V ({chg.loc[day]:+.0f}%), "
-                             f"basis {basis}. K is only valid on the calibrated basis.",
-                             dict(V_before=round(b, 0), V_after=round(a, 0), change_pct=round(chg.loc[day], 1), basis=basis),
-                             signal="VOLTAGE", before=b, after=a, change=chg.loc[day]))
+            evid = dict(V_before=round(b, 0), V_after=round(a, 0), change_pct=round(c, 1), basis=basis)
+            if abs(c) > pct:
+                ev.append(_event(w, prev_day, day, "VOLTAGE_BASIS_CHANGE",
+                                 f"Daily median VOLTAGE moved {b:.0f} V -> {a:.0f} V ({c:+.0f}%), basis {basis}. "
+                                 f"K is only valid on the calibrated basis.",
+                                 evid, signal="VOLTAGE", before=b, after=a, change=c))
+            else:
+                ev.append(_event(w, prev_day, day, "VOLTAGE_STEP",
+                                 f"Daily median VOLTAGE stepped {b:.0f} V -> {a:.0f} V ({c:+.0f}%) on the same basis; "
+                                 f"check tap / transformer setting.",
+                                 evid, signal="VOLTAGE", before=b, after=a, change=c))
     return ev
 
 
@@ -188,24 +199,35 @@ def backpressure_events(daily: pd.DataFrame, factor: float = C.BACKPRESSURE_FACT
     return ev
 
 
-def low_pip_trends(daily: pd.DataFrame, cal: pd.DataFrame, pct: float = C.LOW_PIP_PCT,
+def low_pip_trends(daily: pd.DataFrame, pip_baselines: pd.DataFrame, pct: float = C.LOW_PIP_PCT,
                    roll: int = C.LOW_PIP_ROLL_DAYS) -> list[dict]:
+    """30-day median PIP more than `pct` below the run's baseline.
+
+    `pip_baselines` has one row per (WELL_NAME, run) with run_start, run_end, PIP_base and
+    base_test_ts (the first non-suspect matched test inside that pump run). The rolling window
+    is computed inside each run so it never straddles a pump change."""
     ev = []
-    base = cal.set_index("WELL_NAME")["PIP_base"]
-    for w, g in daily.groupby("WELL_NAME", sort=False):
-        if w not in base.index or not np.isfinite(base[w]):
+    if pip_baselines is None or pip_baselines.empty:
+        return ev
+    for _, bl in pip_baselines.iterrows():
+        if not np.isfinite(bl["PIP_base"]):
             continue
+        w = bl["WELL_NAME"]
+        g = daily[(daily["WELL_NAME"] == w) & (daily["day"] >= bl["run_start"]) & (daily["day"] < bl["run_end"])]
         s = g.dropna(subset=["PIP"]).set_index("day")["PIP"]
+        if s.empty:
+            continue
         r = s.rolling(roll, min_periods=10).median()
-        chg = (r / base[w] - 1) * 100
+        chg = (r / bl["PIP_base"] - 1) * 100
         for a, b in _runs(chg < -pct):
             seg = r.iloc[a:b + 1]
             ev.append(_event(w, s.index[a], s.index[b], "LOW_PIP_TREND",
                              f"30-day median PIP {seg.median():.0f} psi is {abs(chg.iloc[a:b + 1].median()):.0f}% below "
-                             f"the first-calibration baseline ({base[w]:.0f} psi): deeper drawdown / inflow decline.",
-                             dict(PIP_base=round(float(base[w]), 0), PIP_30d=round(float(seg.median()), 0),
-                                  min_PIP_30d=round(float(seg.min()), 0), days=int(b - a + 1)),
-                             signal="PIP", before=float(base[w]), after=float(seg.median()),
+                             f"the run's first-calibration baseline ({bl['PIP_base']:.0f} psi at "
+                             f"{pd.Timestamp(bl['base_test_ts']):%Y-%m-%d}): deeper drawdown / inflow decline.",
+                             dict(PIP_base=round(float(bl["PIP_base"]), 0), PIP_30d=round(float(seg.median()), 0),
+                                  min_PIP_30d=round(float(seg.min()), 0), days=int(b - a + 1), run=bl["run"]),
+                             signal="PIP", before=float(bl["PIP_base"]), after=float(seg.median()),
                              change=float(chg.iloc[a:b + 1].median())))
     return ev
 
@@ -222,11 +244,11 @@ def suspect_test_events(mm: pd.DataFrame) -> list[dict]:
     return ev
 
 
-def detect_events(d: pd.DataFrame, daily: pd.DataFrame, mm: pd.DataFrame, cal: pd.DataFrame,
+def detect_events(d: pd.DataFrame, daily: pd.DataFrame, mm: pd.DataFrame, pip_baselines: pd.DataFrame,
                   q: str = "Q_interp") -> pd.DataFrame:
     ev = (scada_gaps(d) + pump_off_events(d) + voltage_basis_changes(daily) + temp_unit_switches(daily)
           + rate_steps(daily, q) + phi_drifts(daily) + backpressure_events(daily)
-          + low_pip_trends(daily, cal) + suspect_test_events(mm))
+          + low_pip_trends(daily, pip_baselines) + suspect_test_events(mm))
     if not ev:
         return pd.DataFrame(columns=EVENT_COLUMNS)
     e = pd.DataFrame(ev)[EVENT_COLUMNS].sort_values(["WELL_NAME", "start", "type"]).reset_index(drop=True)

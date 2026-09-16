@@ -14,9 +14,9 @@ from pathlib import Path
 import pandas as pd
 
 from . import config as C
-from .calibration import calibrate
+from .calibration import calibrate, pip_baselines
 from .diagnosis import detect_events
-from .load import load_rt, load_tests
+from .load import load_esp_master, load_rt, load_tests, pump_runs, run_label
 from .mapping import map_tests
 from .quality import add_quality_flags, filter_summary, monthly_flag_counts
 from .validation import mape_summary, mape_table, validate
@@ -38,6 +38,9 @@ class Results:
     events: pd.DataFrame             # diagnosis event table
     filter_summary: pd.DataFrame     # per-well flag counts
     monthly_flags: pd.DataFrame      # long table for the stacked bar
+    esp: pd.DataFrame                # per-test pump-run metadata (ESP master dataset)
+    runs: pd.DataFrame               # per-well current pump run (install date, pump, stages)
+    pip_baselines: pd.DataFrame      # per (well, run) LOW_PIP_TREND baseline
     meta: dict = field(default_factory=dict)
 
 
@@ -69,17 +72,23 @@ def load_flagged_rt(rt_file: Path = C.RT_FILE, cache_dir: Path = C.CACHE_DIR, fo
     return d, meta
 
 
-def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE,
+def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE, esp_file: Path = C.ESP_MASTER_FILE,
                  cache_dir: Path = C.CACHE_DIR, force: bool = False) -> Results:
     d, meta = load_flagged_rt(rt_file, cache_dir, force)
     tests = load_tests(wt_file)
+    esp = load_esp_master(esp_file)
+    runs = pump_runs(esp)
+    tests = tests.merge(esp[["WELL_NAME", "TEST_TS", "run", "DAYS_FROM_INSTALLATION"]], on=["WELL_NAME", "TEST_TS"], how="left")
+    tests["run"] = tests["run"].fillna("current")
+    d["run"] = run_label(d["TIME_STAMP"], d["WELL_NAME"], runs)
     mapped = map_tests(d, tests)
     mm, cal = calibrate(mapped)
     v = validate(mm, tests)
     d = compute_virtual_rate(d, mm, cal)
     daily = daily_series(d)
     hourly = resample_rates(d, "h", steady_only=True)
-    events = detect_events(d, daily, mm, cal)
+    bl = pip_baselines(mm, runs, d["TIME_STAMP"].min(), d["TIME_STAMP"].max())
+    events = detect_events(d, daily, mm, bl)
     meta.update(
         n_rows=int(len(d)), n_tests=int(len(tests)), n_matched=int(len(mm)),
         rt_start=d["TIME_STAMP"].min(), rt_end=d["TIME_STAMP"].max(),
@@ -88,7 +97,7 @@ def run_pipeline(rt_file: Path = C.RT_FILE, wt_file: Path = C.WT_FILE,
     return Results(rt=d, tests=tests, mapped=mapped, matched=mm, cal=cal, validation=v,
                    mape=mape_table(v), mape_overall=mape_summary(v), daily=daily, hourly=hourly,
                    events=events, filter_summary=filter_summary(d), monthly_flags=monthly_flag_counts(d),
-                   meta=meta)
+                   esp=esp, runs=runs, pip_baselines=bl, meta=meta)
 
 
 def _round(df: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -104,6 +113,8 @@ def results_summary(res: Results) -> str:
              _round(res.matched[["WELL_NAME", "TEST_TS", "Q_LIQ", "RT_X", "K", "PIP_diff_vs_test", "robust_z", "suspect"]], 3).to_string(index=False),
              "", "== validation ==", _round(res.validation, 1).to_string(index=False),
              "", "== MAPE ==", _round(res.mape_overall, 2).to_string(index=False),
+             "", "== pump runs ==", res.runs.to_string(index=False),
+             "", "== PIP baselines ==", _round(res.pip_baselines, 1).to_string(index=False),
              "", "== events ==", res.events.groupby(["WELL_NAME", "type"]).size().to_string(),
              "", json.dumps({k: str(v) for k, v in res.meta.items()}, indent=1)]
     return "\n".join(lines)

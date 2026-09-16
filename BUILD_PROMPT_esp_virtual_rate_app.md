@@ -16,7 +16,7 @@ Do **not** implement the diagnostic matrix or pump-curve models. Only the consta
    `WELL_NAME, GC_NAME, PRODUCTION_METHOD, TIME_STAMP (datetime), WHP, WHT (all null), FLP, PIP, PDP, INTAKE_TEMP, MT, FREQUENCY, VOLTAGE, AMPERAGE`
    Pressures psi, temperatures °F (see units caveat), FREQUENCY Hz, VOLTAGE V, AMPERAGE A.
    Wells: `SA-0162_T, SA-0500_T, SA-0512H_T, SA-0991H_T`. Date range Apr-2024 to Jul-2026.
-2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv`, 1,942 well tests for 163 wells. Use only the 4 wells above (69 tests). Columns needed:
+2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv`, 1,942 well tests for 163 wells. Use only the 4 wells above (72 tests). Columns needed:
    `WELL_NAME, Test Timestamp, P26: Liquid Rate / BFPD, P27: Oil Rtae /BOPD, P29: W.C %, P30: GOR / SCF/STB, P34: Mtr. Freq. /hz, P35: WHP Psi, P39: P.Intake Pressure /psi, P40: P. Discharge Pressure /psi, P11: Pump type, P13: nr. Of Stages, P64: pump intake /TVD, P55: Fluid desity ppg, P81: Well test validiation`
    Non-numeric placeholders such as `DATA_UNRECORDED`, `MISSING_HARDWARE_SPEC` must be coerced to NaN.
 

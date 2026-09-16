@@ -134,11 +134,21 @@ def test_daily_rules_on_synthetic_series():
     daily.loc[40:, "PHI"] = 0.90
     daily.loc[50:53, "WHP"] = 400.0
     daily.loc[25:, "PIP"] = 800.0                # 30-day median falls below 0.85 x baseline
-    cal = pd.DataFrame(dict(WELL_NAME=["W1"], PIP_base=[1000.0]))
+    cal = pd.DataFrame(dict(WELL_NAME=["W1"], run=["current"], run_start=[days[0]],
+                            run_end=[days[-1] + pd.Timedelta(days=1)], PIP_base=[1000.0], base_test_ts=[days[0]]))
     ev = (diagnosis.voltage_basis_changes(daily) + diagnosis.temp_unit_switches(daily)
           + diagnosis.rate_steps(daily) + diagnosis.phi_drifts(daily)
           + diagnosis.backpressure_events(daily) + diagnosis.low_pip_trends(daily, cal))
     types = {e["type"] for e in ev}
     assert types == {"VOLTAGE_BASIS_CHANGE", "TEMP_UNIT_SWITCH", "RATE_STEP", "PHI_DRIFT", "BACKPRESSURE", "LOW_PIP_TREND"}
+    daily2 = daily.copy(); daily2["VOLTAGE"] = 2000.0; daily2.loc[30:, "VOLTAGE"] = 1700.0   # -15 % -> step tier
+    assert [e["type"] for e in diagnosis.voltage_basis_changes(daily2)] == ["VOLTAGE_STEP"]
     rs = [e for e in ev if e["type"] == "RATE_STEP"][0]
     assert rs["change_pct"] == pytest.approx(-30.0, abs=0.5)
+
+
+def test_k_interp_mixed_time_units():
+    c = pd.DataFrame(dict(TEST_TS=pd.to_datetime(["2025-01-01", "2025-01-11"]).astype("datetime64[us]"),
+                          K=[10.0, 20.0], suspect=[False, False]))
+    t = pd.Series(pd.to_datetime(["2025-01-06"]).astype("datetime64[ns]"))
+    assert calibration.k_interp(t, c).tolist() == pytest.approx([15.0])
