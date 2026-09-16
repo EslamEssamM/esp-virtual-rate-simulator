@@ -1,7 +1,7 @@
 # ESP Virtual Rate Simulator
 
-Streamlit application that computes a continuous liquid rate for four ESP wells from
-real-time electrical SCADA data using the Camilleri power-equilibrium method with a single
+Streamlit application that computes a continuous liquid rate for three ESP wells (a fourth is
+loaded but excluded, see below) from real-time electrical SCADA data using the Camilleri power-equilibrium method with a single
 calibration factor **K** per well, validates it against well tests, and lets you explore
 diagnosis and trends for any period.
 
@@ -64,24 +64,52 @@ Two K variants are exposed: `K_single` (median K of the well's non-suspect match
 `K_interp` (linear in time between non-suspect tests, flat outside). Suspect tests are those
 whose K has a robust z-score above 3.5 within the well.
 
+## Well scope
+
+`core/config.py` holds the whole well scope:
+
+```python
+WELLS_ALL      = ["SA-0162_T", "SA-0500_T", "SA-0512H_T", "SA-0991H_T"]
+EXCLUDED_WELLS = {"SA-0991H_T": "Real-time data cover only Apr-May 2024 (previous pump run) ..."}
+WELLS          = [w for w in WELLS_ALL if w not in EXCLUDED_WELLS]
+```
+
+An excluded well is still **loaded** from all three files and still appears in the well selector
+(marked "excluded", with the reason), in the filter summary and in the raw signal viewer on the
+Data quality page. It never enters calibration, K, MAPE, validation, events, the daily series,
+period statistics, cumulative liquid or the exports, apart from `excluded_wells.csv`, which lists
+it with its reason. Every other page shows a banner instead of numbers for it.
+
+No module outside `config.py` refers to a well by name (a test enforces this), so deleting an
+entry from `EXCLUDED_WELLS` is the only change needed to analyse that well, once it has at least
+`MIN_MATCHED_TESTS` matched well tests.
+
 ## Inputs (read-only, in `data/`)
 
-1. `AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx` - 30-min SCADA for the 4 wells.
-2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv` - well tests (72 for the 4 wells).
+1. `AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx` - 30-min SCADA, 69,965 rows for the
+   4 loaded wells (67,240 on the analysed three).
+2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv` - well tests: 72 loaded, 55 on the analysed wells.
 3. `ESP_MASTER_DATASET.csv` - pump-run metadata per test (manufacturer, model, stages, depth,
    days from installation). It gives the current run's install date, drawn as a dashed marker on
    the rate charts, and resets the LOW_PIP_TREND baseline per run.
 
 ## Validation
 
-MAPE of the three predictions is averaged over the same test set - the 13 matched tests that
-have a leave-one-out value (SA-0991H_T's single test is excluded) - and n is reported:
+13 of the 55 well tests on the analysed wells match steady SCADA data. All three methods are
+scored on the same test set (the tests that have a leave-one-out value), and both the mean
+(MAPE) and the median (MdAPE) absolute percentage error are reported, over all matched tests
+and excluding the two suspect tests:
 
-| method | MAPE all | MAPE excl. suspect |
-|---|---|---|
-| M1 single-K (leave-one-out) | 8.4 | 3.8 |
-| M2 walk-forward K | 10.6 | 5.0 |
-| Baseline last test carried forward | 13.7 | 5.4 |
+| method | MAPE all | median all | MAPE excl. suspect | median excl. suspect |
+|---|---|---|---|---|
+| M1 single-K (leave-one-out) | 8.4 | 3.4 | 3.8 | 3.3 |
+| M2 walk-forward K | 10.6 | 6.1 | 5.0 | 4.7 |
+| Baseline last test carried forward | 13.7 | 6.0 | 5.4 | 5.7 |
+
+The Calibration & validation page also shows the same figures per well and a sensitivity panel:
+adding the excluded well changes nothing under the common-test-set rule (its single matched test
+has no leave-one-out value), while dropping that rule would flatter the baseline to 12.8 % and
+leave M1 and M2 untouched.
 
 ## Layout
 
@@ -91,7 +119,7 @@ app_pages/          one script per page
 ui/                 presentation helpers: cached data access, sidebar, Plotly chart builders
 .streamlit/         theme
 core/
-  config.py         thresholds and file paths
+  config.py         well scope (WELLS_ALL / EXCLUDED_WELLS / WELLS), thresholds and file paths
   load.py           read the two input files, coerce types
   quality.py        row flags (nothing is dropped), derived signals, FREQ_FILLED
   mapping.py        well test <-> SCADA matching (+/-12 h, widen to +/-24 h)
@@ -108,7 +136,6 @@ cache/              parquet cache (created on first run)
 ## Known dataset facts
 
 - All four wells have a SCADA gap from Jun to Nov 2024.
-- SA-0991H_T has real-time data only for Apr-May 2024 with one matching test.
 - The VOLTAGE tag changes basis over time (LV drive side vs MV motor side). K is only valid
   on the basis it was calibrated on, so periods on another basis are shown as "uncalibrated".
 - SA-0162_T temperatures are in degC before Oct-2025 and degF after (converted for display).

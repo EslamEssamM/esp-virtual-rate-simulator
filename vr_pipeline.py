@@ -8,7 +8,10 @@ import pandas as pd, numpy as np, sys
 RT = sys.argv[1] if len(sys.argv)>1 else 'data/AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx'
 WT = sys.argv[2] if len(sys.argv)>2 else 'data/GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv'
 OUT = sys.argv[3] if len(sys.argv)>3 else 'out'
-WELLS = ['SA-0162_T','SA-0500_T','SA-0512H_T','SA-0991H_T']
+WELLS_ALL = ['SA-0162_T','SA-0500_T','SA-0512H_T','SA-0991H_T']
+EXCLUDED = {'SA-0991H_T': 'Real-time data cover only Apr-May 2024 (previous pump run) and match a single well test; '
+                          'K cannot be validated, no leave-one-out, no PHI trend. New WG-4000 run installed Jun-2026 has no SCADA yet.'}
+WELLS = [w for w in WELLS_ALL if w not in EXCLUDED]
 WIN_H = 12          # +/- hours around test timestamp for mapping
 MIN_ROWS = 6        # min steady 30-min rows in window
 
@@ -56,6 +59,7 @@ def load_tests(p):
         'GOR': num('P30: GOR / SCF/STB'), 'T_FREQ': num('P34: Mtr. Freq. /hz'), 'T_WHP': num('P35: WHP Psi'),
         'T_PIP': num('P39: P.Intake Pressure /psi'), 'T_PDP': num('P40: P. Discharge Pressure /psi'),
         'PUMP': t['P11: Pump type'], 'STAGES': num('P13: nr. Of Stages'), 'PUMP_DEPTH': num('P64: pump intake /TVD'),
+        'SG': num('P55: Fluid desity ppg') / 8.33,
         'VALID': t['P81: Well test validiation']})
     return t.sort_values(['WELL_NAME','TEST_TS']).reset_index(drop=True)
 

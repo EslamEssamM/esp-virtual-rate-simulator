@@ -23,17 +23,22 @@ TEST_COLUMNS = {
     "P64: pump intake /TVD": "PUMP_DEPTH",
     "P55: Fluid desity ppg": "FLUID_PPG",
 }
+WATER_PPG = 8.33          # ppg of fresh water, for the specific-gravity column
 TEST_TEXT_COLUMNS = {
     "P11: Pump type": "PUMP",
     "P81: Well test validiation": "VALID",
 }
 
 
-def load_rt(path: Path | str = C.RT_FILE, wells: list[str] = C.WELLS) -> pd.DataFrame:
+def load_rt(path: Path | str = C.RT_FILE, wells: list[str] | None = None) -> pd.DataFrame:
     """Real-time SCADA frame for the selected wells, sorted by well and time.
+
+    Loads every well in WELLS_ALL by default, including excluded ones: they are displayed
+    on the Data quality page and must never be silently missing.
 
     Every row of the source file for these wells is kept; nothing is dropped here.
     """
+    wells = C.WELLS_ALL if wells is None else wells
     path = Path(path)
     if path.suffix == ".parquet":
         d = pd.read_parquet(path)
@@ -49,11 +54,12 @@ def load_rt(path: Path | str = C.RT_FILE, wells: list[str] = C.WELLS) -> pd.Data
     return d
 
 
-def load_tests(path: Path | str = C.WT_FILE, wells: list[str] = C.WELLS) -> pd.DataFrame:
+def load_tests(path: Path | str = C.WT_FILE, wells: list[str] | None = None) -> pd.DataFrame:
     """Well-test frame for the selected wells with numeric coercion.
 
     Placeholders such as DATA_UNRECORDED / MISSING_HARDWARE_SPEC become NaN.
     """
+    wells = C.WELLS_ALL if wells is None else wells
     t = pd.read_csv(path, low_memory=False)
     t = t[t["WELL_NAME"].isin(wells)].copy()
     out = pd.DataFrame({
@@ -64,6 +70,7 @@ def load_tests(path: Path | str = C.WT_FILE, wells: list[str] = C.WELLS) -> pd.D
         out[dst] = pd.to_numeric(t[src], errors="coerce").values if src in t.columns else np.nan
     for src, dst in TEST_TEXT_COLUMNS.items():
         out[dst] = t[src].astype(str).values if src in t.columns else ""
+    out["SG"] = out["FLUID_PPG"] / WATER_PPG
     out = out.sort_values(["WELL_NAME", "TEST_TS"], kind="mergesort").reset_index(drop=True)
     out["TEST_ID"] = out["WELL_NAME"] + " @ " + out["TEST_TS"].dt.strftime("%Y-%m-%d %H:%M")
     return out
@@ -73,11 +80,12 @@ ESP_COLUMNS = ["PUMP_MANUFACTURER", "CANONICAL_MODEL", "NUMBER_OF_STAGES", "INST
                "DAYS_FROM_INSTALLATION", "IS_ACTIVE_CURRENT_RUN"]
 
 
-def load_esp_master(path: Path | str = C.ESP_MASTER_FILE, wells: list[str] = C.WELLS) -> pd.DataFrame:
+def load_esp_master(path: Path | str = C.ESP_MASTER_FILE, wells: list[str] | None = None) -> pd.DataFrame:
     """Per-test pump-run metadata for the selected wells (ESP_MASTER_DATASET.csv).
 
     DAYS_FROM_INSTALLATION < 0 (or IS_ACTIVE_CURRENT_RUN False) marks a test from a previous run.
     """
+    wells = C.WELLS_ALL if wells is None else wells
     t = pd.read_csv(path, low_memory=False)
     t = t[t["WELL_NAME"].isin(wells)].copy()
     out = pd.DataFrame({"WELL_NAME": t["WELL_NAME"].astype(str).values,

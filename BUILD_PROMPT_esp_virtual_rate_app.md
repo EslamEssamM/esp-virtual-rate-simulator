@@ -6,7 +6,7 @@ Copy everything below the line into your AI coding tool. The reference implement
 
 ## Task
 
-Build a Python + Streamlit application called **ESP Virtual Rate Simulator** that calculates a continuous liquid rate for 4 ESP wells from real-time electrical SCADA data using the Camilleri power-equilibrium method with one overall calibration factor K per well, validates it against well tests, and lets a user explore diagnosis and trends for any period. The dataset is fixed (a demonstration), so load it once, cache it, and never modify the source files.
+Build a Python + Streamlit application called **ESP Virtual Rate Simulator** that calculates a continuous liquid rate for 3 ESP wells (a 4th is loaded but excluded, see below) from real-time electrical SCADA data using the Camilleri power-equilibrium method with one overall calibration factor K per well, validates it against well tests, and lets a user explore diagnosis and trends for any period. The dataset is fixed (a demonstration), so load it once, cache it, and never modify the source files.
 
 Do **not** implement the diagnostic matrix or pump-curve models. Only the constant-K power method.
 
@@ -15,8 +15,8 @@ Do **not** implement the diagnostic matrix or pump-curve models. Only the consta
 1. `AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx`, sheet `AI_VW_REAL_TIME_DATA`, 69,965 rows, 30-min cadence (some 1-min bursts). Columns:
    `WELL_NAME, GC_NAME, PRODUCTION_METHOD, TIME_STAMP (datetime), WHP, WHT (all null), FLP, PIP, PDP, INTAKE_TEMP, MT, FREQUENCY, VOLTAGE, AMPERAGE`
    Pressures psi, temperatures °F (see units caveat), FREQUENCY Hz, VOLTAGE V, AMPERAGE A.
-   Wells: `SA-0162_T, SA-0500_T, SA-0512H_T, SA-0991H_T`. Date range Apr-2024 to Jul-2026.
-2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv`, 1,942 well tests for 163 wells. Use only the 4 wells above (72 tests). Columns needed:
+   Wells: `SA-0162_T, SA-0500_T, SA-0512H_T` are analysed. `SA-0991H_T` is **excluded** (config `EXCLUDED_WELLS = {'SA-0991H_T': reason}`): its SCADA covers only Apr–May 2024 (previous pump run) and matches one well test, so nothing can be validated. It must still be loaded and listed, greyed out with the reason, and never enter K, MAPE, events or period statistics. Date range Apr-2024 to Jul-2026.
+2. `GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv`, 1,942 well tests for 163 wells. Use only the 4 wells above (69 tests). Columns needed:
    `WELL_NAME, Test Timestamp, P26: Liquid Rate / BFPD, P27: Oil Rtae /BOPD, P29: W.C %, P30: GOR / SCF/STB, P34: Mtr. Freq. /hz, P35: WHP Psi, P39: P.Intake Pressure /psi, P40: P. Discharge Pressure /psi, P11: Pump type, P13: nr. Of Stages, P64: pump intake /TVD, P55: Fluid desity ppg, P81: Well test validiation`
    Non-numeric placeholders such as `DATA_UNRECORDED`, `MISSING_HARDWARE_SPEC` must be coerced to NaN.
 
@@ -66,13 +66,13 @@ Also derive `dP = PDP − PIP`, `X`, `P_elec_kVA = √3·V·I/1000`, `FREQ_FILLE
 
 ### 3. `mapping.py` — well test ↔ SCADA
 For each test: take steady rows within ±12 h of `Test Timestamp`; if fewer than 6 rows, widen to ±24 h; if still fewer, mark `NO_RT_DATA` / `INSUFFICIENT_STEADY_DATA`. For matched tests store the median of VOLTAGE, AMPERAGE, PIP, PDP, WHP, dP, X, MT, plus `PIP_diff_vs_test = median SCADA PIP − test PIP` as a sanity check, and `K = Q_test / X`.
-Expected: 14 matched of 69 (the rest fall before Apr-2024 or inside the Jun–Nov 2024 SCADA gap).
+Expected: 13 matched of 55 (3 analysed wells) (the rest fall before Apr-2024 or inside the Jun–Nov 2024 SCADA gap).
 
 ### 4. `calibration.py`
 - `K_single` per well = median K of matched tests, after removing outliers with robust z (|K − median| / (1.4826·MAD) > 3.5 → `suspect = True`).
 - `K_interp`: K linearly interpolated in time between non-suspect tests, flat before the first and after the last.
 - Expose both; default display uses `K_interp`, with a toggle.
-- Expected K_single: SA-0162 ≈ 119.3, SA-0500 ≈ 13.2, SA-0512H ≈ 22.1, SA-0991H ≈ 17.3 (one test only, cannot be validated). Expected suspect tests: SA-0162 2026-01-15 (539 BFPD) and SA-0500 2026-04-26 (1761 BFPD).
+- Expected K_single: SA-0162 ≈ 119.3, SA-0500 ≈ 13.2, SA-0512H ≈ 22.1. Expected suspect tests: SA-0162 2026-01-15 (539 BFPD) and SA-0500 2026-04-26 (1761 BFPD).
 
 ### 5. `validation.py` — three predictions per matched test
 - `M1_LOO`: K_single from the other tests of the well × X at this test.
@@ -125,7 +125,7 @@ Global sidebar: well selector (multi), date range picker (default full range), K
 ## Known dataset facts to display as notes in the app
 
 - All 4 wells have a SCADA gap from Jun to Nov 2024.
-- SA-0991H_T has real-time data only for Apr–May 2024 with one matching test.
+- SA-0991H_T is excluded: real-time data only for Apr–May 2024 (previous pump run) with one matching test.
 - The VOLTAGE tag changes basis over time (LV drive side vs MV motor side); K is only valid on the basis it was calibrated on, so periods on another basis are shown as "uncalibrated".
 - SA-0162_T temperatures are in °C before Oct-2025 and °F after.
 - Implied overall efficiency (K·1000/78818) is 0.17–0.28 on MV wells, lower than the expected 0.5–0.7 for PF·ηm·ηp; likely a tag-basis issue. Show this as a caveat, do not "fix" it.

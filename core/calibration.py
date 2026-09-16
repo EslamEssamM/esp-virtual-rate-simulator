@@ -30,12 +30,19 @@ def flag_suspect(m: pd.DataFrame, z_max: float = C.ROBUST_Z_MAX) -> pd.DataFrame
     return mm.sort_values(["WELL_NAME", "TEST_TS"]).reset_index(drop=True)
 
 
-def calibration_table(mm: pd.DataFrame) -> pd.DataFrame:
-    """One row per well: K_single, spread, test count/date range, voltage basis window
-    and the PHI calibration baseline."""
+def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) -> pd.DataFrame:
+    """One row per calibrated well: K_single, spread, test count/date range, voltage basis
+    window and the PHI calibration baseline.
+
+    A well with fewer than `min_tests` non-suspect matched tests is left out: a K from a single
+    test cannot be validated (no leave-one-out, no walk-forward). The pipeline reports such a
+    well instead of dropping it silently.
+    """
     good = mm[~mm["suspect"]]
     rows = []
     for w, g in good.groupby("WELL_NAME"):
+        if len(g) < min_tests:
+            continue
         k = g["K"]
         rows.append(dict(
             WELL_NAME=w,

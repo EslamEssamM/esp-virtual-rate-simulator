@@ -38,14 +38,35 @@ with c2:
         st.caption("Reported as a caveat only. On the MV wells it is 0.17-0.28, below the 0.5-0.7 expected; "
                    "most likely the voltage tag is not on the motor basis. It is not corrected.")
 
-# ------------------------------------------------------------------ 2. inputs
-st.header("2. Inputs", anchor=False)
+# ------------------------------------------------------------------ 2. well scope
+st.header("2. Well scope: analysed and excluded wells", anchor=False)
+st.markdown(f"""
+{len(res.wells_all)} wells are **loaded** from every input file. {len(res.wells_analysed)} are **analysed**:
+{", ".join(res.wells_analysed)}.
+
+An excluded well keeps all of its rows, flags and raw signals, and stays visible on the Data quality page, but it
+never enters calibration, K, MAPE, validation, events, the daily series, period statistics or cumulative liquid.
+The exclusion list lives in one place (`core/config.py: EXCLUDED_WELLS`); no other module refers to a well by name,
+so a well becomes analysed again by deleting its entry once it has at least {C.MIN_MATCHED_TESTS} matched tests.
+""")
+if len(res.excluded):
+    st.dataframe(res.excluded[["WELL_NAME", "excluded_by", "scada_rows", "scada_first", "scada_last", "well_tests", "pump", "reason"]],
+                 hide_index=True,
+                 column_config={"WELL_NAME": "Well", "excluded_by": "Excluded by",
+                                "scada_rows": st.column_config.NumberColumn("SCADA rows", format="localized"),
+                                "scada_first": st.column_config.DatetimeColumn("First row", format="YYYY-MM-DD"),
+                                "scada_last": st.column_config.DatetimeColumn("Last row", format="YYYY-MM-DD"),
+                                "well_tests": "Well tests", "pump": "Pump",
+                                "reason": st.column_config.TextColumn("Reason (verbatim from config)", width="large")})
+
+# ------------------------------------------------------------------ 3. inputs
+st.header("3. Inputs", anchor=False)
 m = res.meta
 st.markdown(f"""
 | File | Used for | This dataset |
 |---|---|---|
-| `{C.RT_FILE.name}` (sheet `{C.RT_SHEET}`) | 30-min SCADA: WHP, PIP, PDP, MT, INTAKE_TEMP, FREQUENCY, VOLTAGE, AMPERAGE | {m['n_rows']:,} rows, {pd.Timestamp(m['rt_start']):%d %b %Y} to {pd.Timestamp(m['rt_end']):%d %b %Y} |
-| `{C.WT_FILE.name}` | Well tests: liquid rate, PIP/PDP/WHP at test, frequency | {m['n_tests']} tests for the 4 wells |
+| `{C.RT_FILE.name}` (sheet `{C.RT_SHEET}`) | 30-min SCADA: WHP, PIP, PDP, MT, INTAKE_TEMP, FREQUENCY, VOLTAGE, AMPERAGE | {m['n_rows']:,} rows loaded, {m['n_rows_analysed']:,} analysed; {pd.Timestamp(m['rt_start']):%d %b %Y} to {pd.Timestamp(m['rt_end']):%d %b %Y} |
+| `{C.WT_FILE.name}` | Well tests: liquid rate, PIP/PDP/WHP at test, frequency | {m['n_tests']} tests loaded, {m['n_tests_analysed']} on analysed wells |
 | `{C.ESP_MASTER_FILE.name}` | Pump run metadata: manufacturer, model, stages, depth, days from installation | run boundaries drawn on the charts |
 
 Files are read once, filtered to the 4 wells, timestamps parsed, non-numeric placeholders (`DATA_UNRECORDED`, `MISSING_HARDWARE_SPEC`) coerced to NaN.
@@ -53,7 +74,7 @@ The flagged SCADA frame is cached as parquet in `cache/`; the source files are n
 """)
 
 # ------------------------------------------------------------------ 3. flags
-st.header("3. Row quality flags (nothing is dropped)", anchor=False)
+st.header("4. Row quality flags (nothing is dropped)", anchor=False)
 st.markdown(f"""
 Every SCADA row is kept and receives boolean flags. Only rows that pass all of them, are steady, and are on the calibrated voltage basis carry a rate.
 
@@ -80,7 +101,7 @@ st.dataframe(fs, hide_index=True, column_config={
     "calibrated_basis": st.column_config.NumberColumn("Steady + calibrated basis (carry a rate)", format="localized")})
 
 # ------------------------------------------------------------------ 4. mapping
-st.header("4. Well test to SCADA mapping", anchor=False)
+st.header("5. Well test to SCADA mapping", anchor=False)
 counts = res.mapped["MATCH"].value_counts()
 st.markdown(f"""
 For each well test, take the **steady** SCADA rows within +/-{C.MAP_WINDOW_H} h of the test timestamp. If fewer than {C.MAP_MIN_ROWS} rows,
@@ -88,20 +109,20 @@ widen to +/-{C.MAP_WINDOW_WIDE_H} h. If still fewer, the test is `NO_RT_DATA` (n
 For a matched test, the SCADA state is the **median** of VOLTAGE, AMPERAGE, PIP, PDP, WHP, dP, X and MT over those rows, and
 `PIP_diff_vs_test = median SCADA PIP - test PIP` is kept as a sanity check.
 
-Result on this dataset: **{counts.get('MATCHED', 0)} matched** of {len(res.mapped)} tests
+Result on this dataset: **{counts.get('MATCHED', 0)} matched** of {len(res.mapped)} tests on the analysed wells
 ({counts.get('NO_RT_DATA', 0)} with no SCADA rows in the window, {counts.get('INSUFFICIENT_STEADY_DATA', 0)} with too few steady rows).
 The unmatched tests fall before Apr-2024 or inside the Jun-Nov 2024 SCADA gap.
 """)
 
 # ------------------------------------------------------------------ 5. calibration
-st.header("5. Calibration of K", anchor=False)
+st.header("6. Calibration of K", anchor=False)
 st.markdown(f"""
 1. `K = Q_test / X` for every matched test.
 2. **Suspect screening** inside each well with a robust z-score: `|K - median(K)| / ({C.MAD_SCALE} x MAD) > {C.ROBUST_Z_MAX}` marks the test suspect.
    Suspect tests stay visible everywhere (red crosses) but are excluded from K.
 3. **K single** = median K of the non-suspect tests.
 4. **K interpolated** = K linear in time between non-suspect tests, flat before the first and after the last (default in the sidebar).
-5. A well needs at least one non-suspect matched test; with a single test K cannot be validated (SA-0991H_T).
+5. A well needs at least {C.MIN_MATCHED_TESTS} non-suspect matched tests to be calibrated: with a single test K cannot be validated (no leave-one-out, no walk-forward). Such a well is reported as excluded, never silently calibrated.
 """)
 ct = res.cal.copy()
 ct["first_test"] = ct["first_test"].dt.strftime("%Y-%m-%d"); ct["last_test"] = ct["last_test"].dt.strftime("%Y-%m-%d")
@@ -116,7 +137,7 @@ sus = res.matched[res.matched["suspect"]]
 st.caption("Suspect tests: " + "; ".join(f"{r['WELL_NAME']} {r['TEST_TS']:%Y-%m-%d} ({r['Q_LIQ']:.0f} BFPD, K={r['K']:.1f}, robust z={r['robust_z']:.1f})" for _, r in sus.iterrows()))
 
 # ------------------------------------------------------------------ 6. worked example
-st.header("6. Worked example on one matched test", anchor=False)
+st.header("7. Worked example on one matched test", anchor=False)
 mm = res.matched
 labels = {f"{r['WELL_NAME']}  {r['TEST_TS']:%Y-%m-%d %H:%M}  ({r['Q_LIQ']:.0f} BFPD)": i for i, r in mm.iterrows()}
 pick = st.selectbox("Matched test", list(labels), key="method_example")
@@ -150,7 +171,7 @@ PHI at this test: `({r['RT_dP']:.0f} / {r['RT_P_elec_kVA']:.1f}) / {cal.loc[w, '
 """)
 
 # ------------------------------------------------------------------ 7. validation
-st.header("7. Validation against well tests", anchor=False)
+st.header("8. Validation against well tests", anchor=False)
 st.markdown("""
 Three predictions per matched test, each compared with the measured rate as an absolute percentage error (APE):
 
@@ -160,16 +181,24 @@ Three predictions per matched test, each compared with the measured rate as an a
 | M2 walk-forward | K of the most recent *earlier* non-suspect test | what a field engineer would have used at the time |
 | Baseline | none: the last well-test rate carried forward | current practice |
 
-MAPE is averaged over the same test set for all three methods: the tests that have a leave-one-out value
-(a well with a single matched test has none). n is shown next to every MAPE.
+Both errors are reported for every method: **MAPE** (mean absolute % error, which one bad test can dominate) and
+**MdAPE** (median absolute % error, the typical test). Each is shown over all matched tests and excluding the suspect
+tests, and all three methods are scored on the same test set: the tests that have a leave-one-out value. n is shown
+next to every figure.
 """)
 mo = res.mape_overall.copy(); mo["label"] = mo["method"].map(METHOD_LABELS)
-st.dataframe(mo[["label", "MAPE_all", "n_all", "MAPE_excl_suspect", "n_excl_suspect"]], hide_index=True,
-             column_config={"label": "Method", "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f"), "n_all": "n",
-                            "MAPE_excl_suspect": st.column_config.NumberColumn("MAPE excl. suspect (%)", format="%.1f"), "n_excl_suspect": "n "})
+st.dataframe(mo[["label", "MAPE_all", "MdAPE_all", "n_all", "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]], hide_index=True,
+             column_config={"label": "Method",
+                            "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f"),
+                            "MdAPE_all": st.column_config.NumberColumn("median all (%)", format="%.1f"), "n_all": "n",
+                            "MAPE_excl_suspect": st.column_config.NumberColumn("MAPE excl. suspect (%)", format="%.1f"),
+                            "MdAPE_excl_suspect": st.column_config.NumberColumn("median excl. suspect (%)", format="%.1f"),
+                            "n_excl_suspect": "n "})
+st.caption("The Calibration & validation page has the same table per well, plus the effect of the exclusion and "
+           "test-set rules.")
 
 # ------------------------------------------------------------------ 8. continuous rate
-st.header("8. Continuous virtual rate and period statistics", anchor=False)
+st.header("9. Continuous virtual rate and period statistics", anchor=False)
 st.markdown(f"""
 - A row carries a rate when it is `usable`, on the calibrated voltage basis (`elec_basis_ok`) and X is finite. Charts and statistics use the **steady** subset by default; the sidebar toggle only adds transient rows to the drawing.
 - Hourly / daily series are **medians** of the rows in each bin; empty bins stay empty so gaps are visible.
@@ -179,7 +208,7 @@ st.markdown(f"""
 """)
 
 # ------------------------------------------------------------------ 9. diagnosis
-st.header("9. Rule-based event detection (no diagnostic matrix)", anchor=False)
+st.header("10. Rule-based event detection (no diagnostic matrix)", anchor=False)
 st.markdown(f"""
 Run on the per-well daily series (medians over rows that are not pump-off; rates over steady rows). Every event carries a one-line explanation and its evidence numbers.
 
@@ -200,9 +229,10 @@ ev = res.events.groupby("type").size().rename("count").reset_index()
 st.dataframe(ev, hide_index=True, column_config={"type": "Event type", "count": "Events on this dataset"})
 
 # ------------------------------------------------------------------ 10. what is deliberately not done
-st.header("10. Scope and limitations", anchor=False)
+st.header("11. Scope and limitations", anchor=False)
 st.markdown("""
 - Only the constant-K power method is implemented: **no diagnostic matrix, no pump-curve model**.
+- A well whose SCADA cannot validate a K is excluded rather than given an unvalidated rate; the reason is shown verbatim wherever it would have appeared.
 - K absorbs everything unknown (PF, efficiencies, transformer ratio, volume factor). It is therefore only valid for the electrical basis it was calibrated on and for the pump run it was calibrated on; both are flagged on the charts rather than corrected.
 - PHI moves with the operating point as well as with pump condition; it is a drift indicator, not a pump-health measurement.
 - Well tests with fewer than 6 steady SCADA rows within 24 h are not used, and no row is ever dropped from the dataset: every exclusion is a visible flag on the Data quality page.

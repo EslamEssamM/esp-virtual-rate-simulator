@@ -5,12 +5,13 @@ from core.config import EFF_DENOM
 from core.validation import whatif_k, whatif_mape
 from ui import data as D
 from ui.charts import k_chart, validation_chart, whatif_chart
+from ui.components import excluded_notice
 from ui.sidebar import filters
 from ui.theme import METHOD_LABELS
 
 f = filters()
 res = D.get_results()
-wells = list(f["wells"])
+wells = list(f["wells_analysed"])
 mm = res.matched
 cal = res.cal.set_index("WELL_NAME")
 
@@ -18,8 +19,9 @@ st.title("Calibration & validation", anchor=False)
 st.caption("K = Q_test / X at each well test that has steady SCADA rows within +/-12 h (widened to +/-24 h when needed). "
            "Suspect tests (robust z > 3.5 within the well) are shown but excluded from K.")
 
+excluded_notice(f["wells_excluded"], "calibration and validation")
 if not wells:
-    st.warning("Select at least one well in the sidebar.", icon=":material/filter_alt:")
+    st.warning("Select at least one analysed well in the sidebar.", icon=":material/filter_alt:")
     st.stop()
 
 # ---------------------------------------------------------------- calibration table
@@ -103,25 +105,63 @@ c1, c2 = st.columns([3, 2])
 with c1:
     st.plotly_chart(validation_chart(v), key="validation_chart", config=dict(displaylogo=False))
 with c2:
-    st.markdown("**MAPE (all selected wells)**" if len(wells) == 4 else "**MAPE (all wells)**")
+    st.markdown("**Error per method**")
     mo = res.mape_overall.copy()
     mo["label"] = mo["method"].map(METHOD_LABELS)
-    st.dataframe(mo[["label", "MAPE_all", "n_all", "MAPE_excl_suspect", "n_excl_suspect"]], hide_index=True,
+    st.dataframe(mo[["label", "MAPE_all", "MdAPE_all", "n_all", "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],
+                 hide_index=True,
                  column_config={"label": "Method",
-                                "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f"),
+                                "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f",
+                                                                          help="Mean absolute % error over all matched tests."),
+                                "MdAPE_all": st.column_config.NumberColumn("median (%)", format="%.1f",
+                                                                           help="Median absolute % error: the typical test, unaffected by one bad test."),
                                 "n_all": "n",
                                 "MAPE_excl_suspect": st.column_config.NumberColumn("MAPE excl. suspect (%)", format="%.1f"),
-                                "n_excl_suspect": "n"})
-    st.caption("All methods are averaged over the same tests (those with a leave-one-out value); "
-               "SA-0991H_T's single test is therefore excluded from every MAPE.")
-    with st.expander("MAPE per well"):
+                                "MdAPE_excl_suspect": st.column_config.NumberColumn("median (%)", format="%.1f"),
+                                "n_excl_suspect": "n "})
+    st.caption(f"Averaged over the {int(mo['n_all'].max())} matched tests of the "
+               f"{len(res.wells_analysed)} analysed wells that have a leave-one-out value, so the three methods are "
+               "scored on the same tests. The median column shows the typical test; the mean is pulled up by the two "
+               "suspect tests.")
+    with st.expander("Per well", icon=":material/table_rows:"):
         mw = res.mape[(res.mape["scope"] != "ALL") & res.mape["scope"].isin(wells)].copy()
         mw["label"] = mw["method"].map(METHOD_LABELS)
-        st.dataframe(mw[["scope", "label", "MAPE_all", "n_all", "MAPE_excl_suspect", "n_excl_suspect"]], hide_index=True,
+        st.dataframe(mw[["scope", "label", "MAPE_all", "MdAPE_all", "n_all", "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],
+                     hide_index=True,
                      column_config={"scope": "Well", "label": "Method",
-                                    "MAPE_all": st.column_config.NumberColumn("all (%)", format="%.1f"),
-                                    "MAPE_excl_suspect": st.column_config.NumberColumn("excl. suspect (%)", format="%.1f"),
+                                    "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f"),
+                                    "MdAPE_all": st.column_config.NumberColumn("median (%)", format="%.1f"),
+                                    "MAPE_excl_suspect": st.column_config.NumberColumn("MAPE excl. susp. (%)", format="%.1f"),
+                                    "MdAPE_excl_suspect": st.column_config.NumberColumn("median (%)", format="%.1f"),
                                     "n_all": "n", "n_excl_suspect": "n "})
+    with st.expander("Effect of the exclusion and test-set rules", icon=":material/rule_settings:"):
+        st.caption("What the headline errors would be under other rules. The first block is what the app reports "
+                   "everywhere; the others are shown only so the effect of each rule is visible.")
+        sv = res.sensitivity.copy()
+        sv["label"] = sv["method"].map(METHOD_LABELS)
+        st.dataframe(sv[["wells_scope", "test_rule", "label", "MAPE_all", "MdAPE_all", "n_all",
+                         "MAPE_excl_suspect", "MdAPE_excl_suspect", "n_excl_suspect"]],
+                     hide_index=True,
+                     column_config={"wells_scope": "Wells", "test_rule": "Test set", "label": "Method",
+                                    "MAPE_all": st.column_config.NumberColumn("MAPE all (%)", format="%.1f"),
+                                    "MdAPE_all": st.column_config.NumberColumn("median (%)", format="%.1f"),
+                                    "MAPE_excl_suspect": st.column_config.NumberColumn("MAPE excl. susp. (%)", format="%.1f"),
+                                    "MdAPE_excl_suspect": st.column_config.NumberColumn("median (%)", format="%.1f"),
+                                    "n_all": "n", "n_excl_suspect": "n "})
+        st.markdown(f"""
+- Adding the excluded well changes **nothing** under the common-test-set rule: its single matched test has no
+  leave-one-out value, so it contributes no validated test. That is why it is excluded.
+- Dropping the common-test-set rule lets that one test into the baseline only, flattering it from
+  {mo.loc[mo['method'] == 'BASE_LAST_TEST', 'MAPE_all'].iloc[0]:.1f} % to
+  {sv.loc[(sv['method'] == 'BASE_LAST_TEST') & (sv['test_rule'] != 'Common test set'), 'MAPE_all'].iloc[0]:.1f} %
+  while M1 and M2 are unchanged, which would make the method look worse against the baseline than it is.
+""")
+        if len(res.excluded):
+            st.dataframe(res.excluded[["WELL_NAME", "excluded_by", "scada_rows", "well_tests", "pump", "reason"]],
+                         hide_index=True,
+                         column_config={"WELL_NAME": "Well", "excluded_by": "Excluded by",
+                                        "scada_rows": st.column_config.NumberColumn("SCADA rows", format="localized"),
+                                        "well_tests": "Well tests", "pump": "Pump", "reason": st.column_config.TextColumn("Reason", width="large")})
 
 # ---------------------------------------------------------------- what-if
 st.subheader("What-if: override K", anchor=False)

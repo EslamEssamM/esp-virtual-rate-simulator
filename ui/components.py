@@ -4,23 +4,46 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from core import config as C
 from core.config import PHI_HELP
 from ui.theme import fmt_num
 
-DATASET_NOTES = [
-    "All 4 wells have a SCADA gap from Jun to Nov 2024 (shaded grey on the charts).",
-    "SA-0991H_T has real-time data only for Apr-May 2024 with one matching test; that data belongs to the previous pump run (a new WG-4000 run started in Jun-2026).",
-    "The VOLTAGE tag changes basis over time (LV drive side vs MV motor side). K is only valid on the basis it was calibrated on, so periods on another basis are shown as 'uncalibrated' (amber shading) and carry no rate.",
+BASE_NOTES = [
+    "All wells have a SCADA gap from Jun to Nov 2024 (shaded grey on the charts).",
+    "The VOLTAGE tag changes basis over time (LV drive side vs MV motor side). K is only valid on the basis it was "
+    "calibrated on, so periods on another basis are shown as 'uncalibrated' (amber shading) and carry no rate.",
     "SA-0162_T temperatures are logged in degC before Oct-2025 and degF after; both are converted to degF for display.",
-    "Implied overall efficiency (K x 1000 / 78818) is 0.17-0.28 on the MV wells, lower than the 0.5-0.7 expected for PF x eta_m x eta_p. Most likely a tag-basis issue; it is shown as a caveat and deliberately not corrected.",
-    "FREQUENCY is null in about half of the rows and is never used in the rate. It is shown filled (forward-fill up to 24 h, then monthly median) for display only.",
+    "Implied overall efficiency (K x 1000 / 78818) is 0.17-0.28 on the MV wells, lower than the 0.5-0.7 expected for "
+    "PF x eta_m x eta_p. Most likely a tag-basis issue; it is shown as a caveat and deliberately not corrected.",
+    "FREQUENCY is null in about half of the rows and is never used in the rate. It is shown filled (forward-fill up to "
+    "24 h, then monthly median) for display only.",
 ]
+
+
+def dataset_notes_list() -> list[str]:
+    """Known dataset facts, with one line per excluded well generated from the config."""
+    notes = [f"{w} is loaded but excluded from the analysis: {reason}" for w, reason in C.EXCLUDED_WELLS.items()]
+    return notes + BASE_NOTES
 
 
 def dataset_notes(expanded: bool = False):
     with st.expander("Known dataset facts", icon=":material/info:", expanded=expanded):
-        for n in DATASET_NOTES:
+        for n in dataset_notes_list():
             st.markdown(f"- {n}")
+
+
+def excluded_banner(well: str, where: str = "analysis"):
+    """Banner shown wherever an excluded well would otherwise carry numbers."""
+    st.warning(f"**{well} is excluded from {where}.** {C.well_exclusion_reason(well)}", icon=":material/block:")
+
+
+def excluded_notice(wells, where: str = "analysis") -> bool:
+    """Banner for each selected excluded well. Returns True when at least one was shown."""
+    shown = False
+    for w in wells:
+        excluded_banner(w, where)
+        shown = True
+    return shown
 
 
 def well_header(well: str, run: dict, extra: str | None = None):

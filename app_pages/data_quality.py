@@ -4,6 +4,7 @@ import streamlit as st
 from core.virtual_rate import gap_intervals, pump_off_intervals
 from ui import data as D
 from ui.charts import quality_stack, signal_viewer
+from ui.components import excluded_notice
 from ui.sidebar import filters
 from ui.theme import CATEGORY_LABELS
 
@@ -13,7 +14,9 @@ wells = list(f["wells"])
 
 st.title("Data quality", anchor=False)
 st.caption("Every SCADA row is kept and flagged; nothing is dropped silently. "
-           "A row needs to be steady (usable and not transient) and on the calibrated voltage basis to carry a rate.")
+           "A row needs to be steady (usable and not transient) and on the calibrated voltage basis to carry a rate. "
+           "This is the one page that also shows wells excluded from the analysis.")
+excluded_notice(f["wells_excluded"], "the analysis; its rows and raw signals are shown here")
 
 if not wells:
     st.warning("Select at least one well in the sidebar.", icon=":material/filter_alt:")
@@ -26,12 +29,13 @@ st.caption("Counts over the full SCADA history per well. Flags overlap (a row ca
 fs = res.filter_summary[res.filter_summary["WELL_NAME"].isin(wells)].copy()
 fs["first"] = fs["first"].dt.strftime("%Y-%m-%d")
 fs["last"] = fs["last"].dt.strftime("%Y-%m-%d")
-order = ["WELL_NAME", "rows", "usable", "usable_pct", "steady", "steady_pct", "calibrated_basis", "missing_elec", "missing_press",
+order = ["WELL_NAME", "excluded", "rows", "usable", "usable_pct", "steady", "steady_pct", "calibrated_basis", "missing_elec", "missing_press",
          "pump_off", "bad_dP", "bad_press_range", "bad_freq", "transient", "temp_unit_c", "first", "last"]
 st.dataframe(
     fs[order], hide_index=True,
     column_config={
         "WELL_NAME": st.column_config.TextColumn("Well", pinned=True),
+        "excluded": st.column_config.CheckboxColumn("Excluded", help="Loaded and flagged, but never calibrated or analysed."),
         "rows": st.column_config.NumberColumn("Rows", format="localized"),
         "usable": st.column_config.NumberColumn("Usable", format="localized"),
         "usable_pct": st.column_config.ProgressColumn("Usable %", min_value=0, max_value=100, format="%.1f %%"),

@@ -3,21 +3,30 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
-from core.config import WELLS
+from core.config import WELLS_ALL
 
-# one fixed colour per well - never re-assigned when the selection changes
-WELL_COLORS = {
-    "SA-0162_T": "#2a78d6",   # blue
-    "SA-0500_T": "#eb6834",   # orange
-    "SA-0512H_T": "#1baf7a",  # aqua
-    "SA-0991H_T": "#4a3aa7",  # violet
-}
-WELL_LIGHT = {  # lighter tint of the same hue for transient rows
-    "SA-0162_T": "rgba(42,120,214,0.35)",
-    "SA-0500_T": "rgba(235,104,52,0.35)",
-    "SA-0512H_T": "rgba(27,175,122,0.35)",
-    "SA-0991H_T": "rgba(74,58,167,0.35)",
-}
+# Categorical slots from the validated reference palette, in fixed order. A well keeps its
+# colour whatever the selection is; the mapping is positional over WELLS_ALL so a new or
+# un-excluded well gets a slot without any code change.
+PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#eda100", "#e87ba4", "#008300", "#e34948"]
+PALETTE_RGB = [(42, 120, 214), (235, 104, 52), (27, 175, 122), (74, 58, 167),
+               (237, 161, 0), (232, 123, 164), (0, 131, 0), (227, 73, 72)]
+WELL_COLORS = {w: PALETTE[i % len(PALETTE)] for i, w in enumerate(WELLS_ALL)}
+WELL_LIGHT = {w: "rgba({}, {}, {}, 0.35)".format(*PALETTE_RGB[i % len(PALETTE_RGB)])
+              for i, w in enumerate(WELLS_ALL)}
+EXCLUDED_COLOR = "#898781"        # excluded wells are drawn in muted grey, never in a series hue
+
+
+def well_color(well: str, excluded: bool = False) -> str:
+    if excluded:
+        return EXCLUDED_COLOR
+    return WELL_COLORS.get(well, PALETTE[abs(hash(well)) % len(PALETTE)])
+
+
+def well_light(well: str) -> str:
+    return WELL_LIGHT.get(well, "rgba(137,135,129,0.35)")
+
+
 METHOD_COLORS = {"M1_LOO": "#2a78d6", "M2_WALK": "#eb6834", "BASE_LAST_TEST": "#898781"}
 METHOD_LABELS = {"M1_LOO": "M1 single-K (LOO)", "M2_WALK": "M2 walk-forward", "BASE_LAST_TEST": "Baseline last test"}
 

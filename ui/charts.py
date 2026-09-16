@@ -10,7 +10,7 @@ from core.calibration import k_interp
 from core.virtual_rate import q_col
 from ui.data import FREQ_LABEL
 from ui.theme import (CATEGORY_COLORS, CATEGORY_LABELS, CRITICAL, GOOD, GRID, INK2, METHOD_COLORS, METHOD_LABELS,
-                      MUTED, SERIOUS, TEST_MARK, WARNING, WELL_COLORS, WELL_LIGHT, base_layout)
+                      MUTED, SERIOUS, TEST_MARK, WARNING, base_layout, well_color, well_light)
 
 CATEGORY_ORDER = list(CATEGORY_COLORS)
 
@@ -38,7 +38,7 @@ def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, 
                shade: dict, height: int = 480, zoom: tuple | None = None, title: str | None = None) -> go.Figure:
     """Q_virtual (top) and PHI (bottom) with well tests, gaps, uncalibrated basis and run markers."""
     q = q_col(k_mode)
-    color = WELL_COLORS[well]
+    color = well_color(well)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.05)
 
     if freq == "30min" and not series.empty:
@@ -51,7 +51,7 @@ def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, 
             t = series[~series["rate_steady"].fillna(True).astype(bool)]
             if len(t):
                 fig.add_scatter(x=t["TIME_STAMP"], y=t[q], mode="markers", name="Q virtual (transient rows)",
-                                marker=dict(color=WELL_LIGHT[well], size=5),
+                                marker=dict(color=well_light(well), size=5),
                                 hovertemplate="%{y:,.0f} BFPD<extra>transient</extra>", row=1, col=1)
     elif not series.empty:
         fig.add_scatter(x=series["TIME_STAMP"], y=series[q], mode="lines",
@@ -115,7 +115,7 @@ SIGNALS = [("VOLTAGE", "Voltage, V"), ("AMPERAGE", "Current, A"), ("FREQ_FILLED"
 def signal_viewer(well: str, s: pd.DataFrame, freq: str, pump_off: list, gaps: list, height: int = 1000) -> go.Figure:
     fig = make_subplots(rows=len(SIGNALS), cols=1, shared_xaxes=True, vertical_spacing=0.025,
                         subplot_titles=[t for _, t in SIGNALS])
-    color = WELL_COLORS[well]
+    color = well_color(well)
     for i, (c, label) in enumerate(SIGNALS, start=1):
         if c in s.columns:
             fig.add_scatter(x=s["TIME_STAMP"], y=s[c], mode="lines", name=label, line=dict(color=color, width=1.2),
@@ -154,7 +154,7 @@ def quality_stack(mf: pd.DataFrame, wells: list[str], height_per_well: int = 210
 
 def k_chart(well: str, mm_w: pd.DataFrame, cal_row: pd.Series | None, start, end, height: int = 340) -> go.Figure:
     fig = go.Figure()
-    color = WELL_COLORS[well]
+    color = well_color(well)
     if cal_row is not None and len(mm_w):
         grid = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq="D")
         fig.add_scatter(x=grid, y=k_interp(pd.Series(grid), mm_w), mode="lines", name="K interpolated",
@@ -224,7 +224,7 @@ def whatif_chart(well: str, series: pd.DataFrame, k_ref: float, k_new: float, fr
                  tests: pd.DataFrame | None = None, whatif_at_tests: pd.DataFrame | None = None,
                  height: int = 360) -> go.Figure:
     fig = go.Figure()
-    color = WELL_COLORS[well]
+    color = well_color(well)
     if not series.empty:
         fig.add_scatter(x=series["TIME_STAMP"], y=series["K_single"] * series["X"], mode="lines",
                         name=f"K single {k_ref:.2f}", line=dict(color=MUTED, width=1.4), connectgaps=False,

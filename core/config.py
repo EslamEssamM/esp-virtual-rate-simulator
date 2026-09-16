@@ -9,7 +9,42 @@ RT_FILE = DATA_DIR / "AI_VW_REAL_TIME_DATA_Sample_Date_13-Sep-2026 V 1.1.xlsx"
 RT_SHEET = "AI_VW_REAL_TIME_DATA"
 WT_FILE = DATA_DIR / "GC31_DIGIWELLS_81_PARAM_MASTER_DATASET.csv"
 
-WELLS = ["SA-0162_T", "SA-0500_T", "SA-0512H_T", "SA-0991H_T"]
+# --- wells -----------------------------------------------------------------
+# Every well in WELLS_ALL is LOADED from all three input files. Wells listed in
+# EXCLUDED_WELLS are loaded and displayed (greyed out, with the reason) but never enter
+# calibration, K, MAPE, validation, events, period statistics, cumulative liquid or the
+# exports - apart from excluded_wells.csv, which lists them with their reason.
+# Removing a well from EXCLUDED_WELLS is the only change needed to analyse it: no other
+# module refers to a well by name.
+WELLS_ALL = ["SA-0162_T", "SA-0500_T", "SA-0512H_T", "SA-0991H_T"]
+
+EXCLUDED_WELLS = {
+    "SA-0991H_T": (
+        "Real-time data cover only Apr-May 2024 (previous pump run) and match a single well "
+        "test; K cannot be validated, no leave-one-out, no PHI trend. New WG-4000 run "
+        "installed Jun-2026 has no SCADA yet."
+    ),
+}
+
+WELLS = [w for w in WELLS_ALL if w not in EXCLUDED_WELLS]
+
+# Minimum matched tests a well needs before it can be calibrated and validated.
+MIN_MATCHED_TESTS = 2
+
+
+def is_excluded(well: str) -> bool:
+    return well in EXCLUDED_WELLS
+
+
+def well_exclusion_reason(well: str) -> str:
+    """Verbatim reason a well is excluded, or '' when it is analysed."""
+    return EXCLUDED_WELLS.get(well, "")
+
+
+def analysed(wells) -> list[str]:
+    """The analysed subset of `wells`, in WELLS_ALL order."""
+    s = set(wells)
+    return [w for w in WELLS_ALL if w in s and w not in EXCLUDED_WELLS]
 
 # --- quality thresholds (spec section 2) ---
 PUMP_OFF_V = 100.0

@@ -1,30 +1,101 @@
 """Acceptance tests: the pipeline must reproduce the numbers in the build spec (within +/-2%)."""
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from core import config as C
+
 REL = 0.02
 
-EXPECTED_K = {"SA-0162_T": 119.3, "SA-0500_T": 13.2, "SA-0512H_T": 22.1, "SA-0991H_T": 17.3}
+ANALYSED = ["SA-0162_T", "SA-0500_T", "SA-0512H_T"]
+EXCLUDED_WELL = "SA-0991H_T"
+
+EXPECTED_K = {"SA-0162_T": 119.27, "SA-0500_T": 13.17, "SA-0512H_T": 22.14}
 EXPECTED_SUSPECT = {("SA-0162_T", "2026-01-15", 539.0), ("SA-0500_T", "2026-04-26", 1761.0)}
 
-# Spec table: M1 8.4 / 3.8, M2 10.6 / 5.0, baseline 13.7 / 5.4.
-# Ruling: every MAPE is averaged over the same test set - the 13 tests that have an M1
-# leave-one-out value (SA-0991H's single test is excluded from all three) - and n is reported.
+# Spec table, over the 13 matched tests of the 3 analysed wells that have a leave-one-out value.
 EXPECTED_MAPE = {
     "M1_LOO": (8.4, 3.8),
     "M2_WALK": (10.6, 5.0),
     "BASE_LAST_TEST": (13.7, 5.4),
 }
+# loaded for every well, including the excluded one
 EXPECTED_PUMPS = {"SA-0162_T": ("D1150N", 157), "SA-0500_T": ("B538-1500", 148),
                   "SA-0512H_T": ("D1150N", 254), "SA-0991H_T": ("WG-4000", 145)}
 
+ANALYSIS_TABLES = ["mapped", "matched", "cal", "validation", "mape", "mape_overall",
+                   "daily", "hourly", "events", "pip_baselines", "sensitivity"]
+
+
+def _mentions(df: pd.DataFrame, well: str) -> bool:
+    """True if `well` appears in any cell of `df`."""
+    return any(df[c].astype(str).eq(well).any() for c in df.columns)
+
+
+# --------------------------------------------------------------------------- well scope
+
+def test_config_well_scope():
+    assert C.WELLS == [w for w in C.WELLS_ALL if w not in C.EXCLUDED_WELLS]
+    assert C.WELLS == ANALYSED
+    assert C.is_excluded(EXCLUDED_WELL) and not C.is_excluded(ANALYSED[0])
+    assert C.well_exclusion_reason(EXCLUDED_WELL).strip()
+    assert C.well_exclusion_reason(ANALYSED[0]) == ""
+
+
+def test_excluded_well_is_loaded(res):
+    """It must be loaded from all three files and stay visible in the quality tables."""
+    assert EXCLUDED_WELL in set(res.rt["WELL_NAME"])
+    assert EXCLUDED_WELL in set(res.tests["WELL_NAME"])
+    assert EXCLUDED_WELL in set(res.esp["WELL_NAME"])
+    assert EXCLUDED_WELL in set(res.runs["WELL_NAME"])
+    assert EXCLUDED_WELL in set(res.filter_summary["WELL_NAME"])
+    assert EXCLUDED_WELL in set(res.monthly_flags["WELL_NAME"])
+    assert int(res.filter_summary.set_index("WELL_NAME").loc[EXCLUDED_WELL, "rows"]) == 2725
+
+
+def test_excluded_well_never_analysed(res):
+    """Absent from every computed table, and carrying no K, rate or PHI."""
+    for name in ANALYSIS_TABLES:
+        assert not _mentions(getattr(res, name), EXCLUDED_WELL), f"{EXCLUDED_WELL} leaked into {name}"
+    g = res.rt[res.rt["WELL_NAME"] == EXCLUDED_WELL]
+    assert len(g) > 0
+    assert not g["rate_ok"].any() and not g["rate_steady"].any()
+    for c in ["K_single", "K_interp", "Q_single", "Q_interp", "PHI"]:
+        assert g[c].isna().all(), c
+    assert res.wells_analysed == ANALYSED
+    assert res.wells_all == sorted(C.WELLS_ALL)
+
+
+def test_excluded_well_listed_with_reason(res):
+    ex = res.excluded.set_index("WELL_NAME")
+    assert EXCLUDED_WELL in ex.index
+    reason = ex.loc[EXCLUDED_WELL, "reason"]
+    assert isinstance(reason, str) and reason.strip()
+    assert reason == C.EXCLUDED_WELLS[EXCLUDED_WELL]        # verbatim from config
+    assert ex.loc[EXCLUDED_WELL, "excluded_by"] == "config"
+    assert ex.loc[EXCLUDED_WELL, "scada_rows"] == 2725
+    assert ex.loc[EXCLUDED_WELL, "well_tests"] == 17
+
+
+def test_excluded_well_name_not_hard_coded_outside_config():
+    """Removing a well from EXCLUDED_WELLS must be the only change needed to analyse it."""
+    root = Path(__file__).resolve().parent.parent
+    files = [p for p in root.glob("core/*.py")] + [p for p in root.glob("ui/*.py")] \
+        + [p for p in root.glob("app_pages/*.py")] + [root / "app.py"]
+    offenders = [p.name for p in files
+                 if p.name != "config.py" and EXCLUDED_WELL in p.read_text(encoding="utf-8")]
+    assert offenders == [], f"well name hard-coded in {offenders}"
+
+
+# --------------------------------------------------------------------------- dataset and flags
 
 def test_dataset_shape(res):
-    assert len(res.rt) == 69965                      # every SCADA row kept
-    assert set(res.rt["WELL_NAME"]) == set(EXPECTED_K)
-    assert len(res.tests) == 72
-    assert res.rt["TIME_STAMP"].is_monotonic_increasing or True  # sorted within well
+    assert len(res.rt) == 69965                      # every SCADA row of every loaded well kept
+    assert set(res.rt["WELL_NAME"]) == set(C.WELLS_ALL)
+    assert len(res.tests) == 72                      # loaded
+    assert res.meta["n_tests_analysed"] == 55        # on the analysed wells
     for _, g in res.rt.groupby("WELL_NAME"):
         assert g["TIME_STAMP"].is_monotonic_increasing
 
@@ -38,13 +109,16 @@ def test_no_rows_dropped_by_flags(res):
     assert d.loc[~d["rate_ok"], "Q_interp"].isna().all()
 
 
-def test_fourteen_matched_tests(res):
+# --------------------------------------------------------------------------- mapping and K
+
+def test_thirteen_matched_tests(res):
     counts = res.mapped["MATCH"].value_counts()
-    assert counts["MATCHED"] == 14
-    assert len(res.matched) == 14
-    assert counts.get("NO_RT_DATA", 0) + counts.get("INSUFFICIENT_STEADY_DATA", 0) == 72 - 14
+    assert counts["MATCHED"] == 13
+    assert len(res.matched) == 13
+    assert len(res.mapped) == 55                     # analysed wells only
+    assert counts.get("NO_RT_DATA", 0) + counts.get("INSUFFICIENT_STEADY_DATA", 0) == 55 - 13
     per_well = res.matched.groupby("WELL_NAME").size().to_dict()
-    assert per_well == {"SA-0162_T": 4, "SA-0500_T": 5, "SA-0512H_T": 4, "SA-0991H_T": 1}
+    assert per_well == {"SA-0162_T": 4, "SA-0500_T": 5, "SA-0512H_T": 4}
 
 
 @pytest.mark.parametrize("well,k_exp", list(EXPECTED_K.items()))
@@ -61,9 +135,12 @@ def test_suspect_tests(res):
 
 def test_suspect_excluded_from_calibration(res):
     cal = res.cal.set_index("WELL_NAME")
+    assert len(cal) == 3
     assert cal.loc["SA-0162_T", "n_tests"] == 3 and cal.loc["SA-0162_T", "n_suspect"] == 1
     assert cal.loc["SA-0500_T", "n_tests"] == 4 and cal.loc["SA-0500_T", "n_suspect"] == 1
 
+
+# --------------------------------------------------------------------------- validation
 
 @pytest.mark.parametrize("method,exp", list(EXPECTED_MAPE.items()))
 def test_mape(res, method, exp):
@@ -78,8 +155,47 @@ def test_mape_common_test_set(res):
     assert row["n_excl_suspect"].tolist() == [11, 8, 11]
 
 
+def test_median_ape_reported(res):
+    """MdAPE is reported next to every MAPE, overall and per well."""
+    for t in (res.mape_overall, res.mape):
+        for c in ["MAPE_all", "MdAPE_all", "MAPE_excl_suspect", "MdAPE_excl_suspect"]:
+            assert c in t.columns
+    row = res.mape_overall.set_index("method")
+    # the two suspect tests pull every mean above the median
+    for m in EXPECTED_MAPE:
+        assert row.loc[m, "MdAPE_all"] < row.loc[m, "MAPE_all"]
+    assert set(res.mape["scope"]) == {"ALL"} | set(ANALYSED)
+
+
+def test_sensitivity_to_exclusion(res):
+    """Including the excluded well adds no validated test; only dropping the common-set rule
+    changes the baseline."""
+    s = res.sensitivity
+    common = s[s["test_rule"] == "Common test set"]
+    analysed = common[common["wells_scope"].str.startswith("Analysed")].set_index("method")
+    all_wells = common[common["wells_scope"].str.startswith("All")].set_index("method")
+    for m in EXPECTED_MAPE:
+        assert all_wells.loc[m, "MAPE_all"] == pytest.approx(analysed.loc[m, "MAPE_all"])
+        assert all_wells.loc[m, "n_all"] == analysed.loc[m, "n_all"]
+    loose = s[s["test_rule"] != "Common test set"].set_index("method")
+    assert loose.loc["BASE_LAST_TEST", "n_all"] == 14                      # the extra single test
+    assert loose.loc["BASE_LAST_TEST", "MAPE_all"] < analysed.loc["BASE_LAST_TEST", "MAPE_all"]
+    assert loose.loc["M1_LOO", "MAPE_all"] == pytest.approx(analysed.loc["M1_LOO", "MAPE_all"])
+
+
+def test_validation_counts(res):
+    v = res.validation
+    assert len(v) == 13
+    assert v["APE_M1_LOO"].notna().sum() == 13       # every analysed well has >= 2 matched tests
+    assert v["APE_M2_WALK"].notna().sum() == 10      # first test of each well has no earlier K
+    assert v["APE_BASE_LAST_TEST"].notna().sum() == 13
+
+
+# --------------------------------------------------------------------------- pump runs and events
+
 @pytest.mark.parametrize("well,exp", list(EXPECTED_PUMPS.items()))
 def test_pump_runs(res, well, exp):
+    """Pump metadata is loaded for every well, excluded ones included."""
     r = res.runs.set_index("WELL_NAME").loc[well]
     assert (r["CANONICAL_MODEL"], int(r["NUMBER_OF_STAGES"])) == exp
 
@@ -88,10 +204,7 @@ def test_run_boundaries(res):
     inst = res.runs.set_index("WELL_NAME")["install_date"]
     assert inst["SA-0500_T"].strftime("%Y-%m") == "2023-05"
     assert inst["SA-0512H_T"].strftime("%Y-%m") == "2025-05"
-    assert inst["SA-0991H_T"].strftime("%Y-%m") == "2026-06"
     assert inst["SA-0162_T"].year == 2017
-    # SA-0991H SCADA (Apr-May 2024) belongs entirely to the previous run
-    assert (res.rt.loc[res.rt["WELL_NAME"] == "SA-0991H_T", "run"] == "previous").all()
     assert (res.rt.loc[res.rt["WELL_NAME"] == "SA-0162_T", "run"] == "current").all()
 
 
@@ -112,19 +225,19 @@ def test_expected_events(res):
     assert has("SA-0512H_T", "LOW_PIP_TREND", "2025-01-01", "2025-12-31")
 
 
-def test_validation_counts(res):
-    v = res.validation
-    assert len(v) == 14
-    assert v["APE_M1_LOO"].notna().sum() == 13       # SA-0991H has a single test -> no LOO
-    assert v["APE_M2_WALK"].notna().sum() == 10      # first test of each well has no earlier K
-    assert v["APE_BASE_LAST_TEST"].notna().sum() == 14
-
+# --------------------------------------------------------------------------- misc
 
 def test_frequency_not_used_in_rate(res):
-    """Q depends only on K, V, I, dP. Perturbing FREQUENCY must not change Q."""
+    """Q depends only on K, V, I, dP. FREQUENCY never enters it."""
     d = res.rt[res.rt["rate_ok"]].head(500)
     q = d["K_interp"] * np.sqrt(3) * d["VOLTAGE"] * d["AMPERAGE"] / (d["PDP"] - d["PIP"])
     assert np.allclose(q, d["Q_interp"])
+
+
+def test_specific_gravity_column(res):
+    """P55 fluid density is carried through as a specific gravity."""
+    sg = res.tests["SG"].dropna()
+    assert len(sg) > 0 and sg.between(0.85, 1.2).all()      # 7.1-10.0 ppg
 
 
 def test_pipeline_fast_from_cache(res):

@@ -1,9 +1,10 @@
 import pandas as pd
 import streamlit as st
 
+from core import config as C
 from ui import data as D
 from ui.charts import rate_chart
-from ui.components import dataset_notes, kpi_tiles, well_header
+from ui.components import dataset_notes, excluded_banner, kpi_tiles, well_header
 from ui.sidebar import filters
 
 f = filters()
@@ -30,8 +31,14 @@ if not f["wells"]:
     st.stop()
 
 for well in f["wells"]:
-    stats = D.period_stats(well, f["start"], f["end"], f["k_mode"], f["steady_only"])
     shade = D.shading(well)
+    if C.is_excluded(well):
+        with st.container(border=True):
+            well_header(well, shade.get("run", {}), extra="loaded, not analysed")
+            excluded_banner(well, "the virtual-rate analysis")
+            st.caption("Its raw signals can still be inspected on the Data quality page.")
+        continue
+    stats = D.period_stats(well, f["start"], f["end"], f["k_mode"], f["steady_only"])
     with st.container(border=True):
         well_header(well, shade.get("run", {}),
                     extra=f"{stats['rows']:,} rows in period, {stats['rate_rows']:,} with a steady calibrated rate")
