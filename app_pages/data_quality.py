@@ -11,7 +11,7 @@ from ui.sidebar import filters, wkey
 from ui.theme import CATEGORY_LABELS
 
 f = filters()
-res = D.get_results(f["dataset"])
+res = D.get_results(f["scope"])
 wells = list(f["wells"])
 
 st.title("Data quality", anchor=False)
@@ -88,15 +88,15 @@ with st.container(horizontal=True, vertical_alignment="bottom"):
     well = st.selectbox("Well", wells, key=wkey("dq_well", f["dataset"]), width=220)
     st.caption(f"Resolution: {D.FREQ_LABEL[f['freq']]} (sidebar). Grey bands: pump off > 6 h; light bands: SCADA gaps > 2 days. "
                "All rows are shown here, including excluded ones.")
-s = D.signal_series(f["dataset"], well, f["start"], f["end"], f["freq"])
+s = D.signal_series(f["scope"], well, f["start"], f["end"], f["freq"])
 if s.empty:
     st.caption("No rows in the selected period.")
 else:
-    ev = D.window_events(f["dataset"], (well,), f["start"], f["end"])
+    ev = D.window_events(f["scope"], (well,), f["start"], f["end"])
     st.plotly_chart(signal_viewer(well, s, f["freq"], pump_off_intervals(ev, well), gap_intervals(ev, well)),
                     key="signal_viewer", config=dict(displaylogo=False))
     # --- intake pressure against the bubble point ---
-    gas = D.gas_by_well(f["dataset"])
+    gas = D.gas_by_well(f["scope"])
     if well in gas.index:
         g = gas.loc[well]
         st.markdown("**Intake pressure vs bubble point**")
@@ -108,7 +108,7 @@ else:
         st.plotly_chart(intake_vs_pb_chart(well, s, float(g["Pb"]), g.to_dict()),
                         key="intake_pb", config=dict(displaylogo=False))
 
-    cats = D.well_slice(f["dataset"], well, f["start"], f["end"])
+    cats = D.well_slice(f["scope"], well, f["start"], f["end"])
     if len(cats):
         from core.quality import exclusion_reason
         counts = exclusion_reason(cats).value_counts()

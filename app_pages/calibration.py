@@ -10,7 +10,7 @@ from ui.sidebar import filters, wkey
 from ui.theme import BASE_METHODS, METHOD_LABELS, WC_ALL_METHODS
 
 f = filters()
-res = D.get_results(f["dataset"])
+res = D.get_results(f["scope"])
 wells = list(f["wells_analysed"])
 mm = res.matched
 cal = res.cal
@@ -161,7 +161,7 @@ wcols = st.columns(2)
 for i, w in enumerate(wells):
     with wcols[i % 2]:
         dly = res.daily[res.daily["WELL_NAME"] == w]
-        st.plotly_chart(watercut_chart(w, D.pvt_series(f["dataset"], w), dly), key=f"wc_{w}", config=dict(displaylogo=False))
+        st.plotly_chart(watercut_chart(w, D.pvt_series(f["scope"], w), dly), key=f"wc_{w}", config=dict(displaylogo=False))
 
 # ---------------------------------------------------------------- validation
 st.subheader("Validation against well tests", anchor=False)
@@ -262,8 +262,8 @@ with wcols[0]:
         "Q_whatif": st.column_config.NumberColumn("Q what-if", format="%.0f"),
         "APE_whatif": st.column_config.NumberColumn("APE %", format="%.1f")})
 with wcols[1]:
-    series = D.rate_series(f["dataset"], w, f["start"], f["end"], "D" if f["freq"] == "30min" else f["freq"], True)
-    tests_w = D.tests_in_range(f["dataset"], w, f["start"], f["end"])
+    series = D.rate_series(f["scope"], w, f["start"], f["end"], "D" if f["freq"] == "30min" else f["freq"], True)
+    tests_w = D.tests_in_range(f["scope"], w, f["start"], f["end"])
     st.plotly_chart(whatif_chart(w, series, k_ref, k_new, f["freq"], tests=tests_w, whatif_at_tests=t),
                     key="whatif_chart", config=dict(displaylogo=False))
     st.caption("Filled diamonds are the measured tests; open diamonds are what the what-if K predicts at the same SCADA state. "

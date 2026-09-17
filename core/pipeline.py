@@ -10,9 +10,10 @@ rows and flags (so the Data quality page can show them) but are removed before c
 they never reach K, MAPE, validation, events, the daily series, period statistics or the exports.
 They are listed, with the reason, in `Results.excluded`.
 
-Pure Python; the app layer wraps `run_pipeline` with a Streamlit cache. The flagged frame is
-cached as parquet in cache/ (keyed on the dataset and the source-file signature) so later runs
-skip the slow read.
+Pure Python; the app layer wraps `run_pipeline` with a Streamlit cache. The *parsed* SCADA frame
+is cached as parquet in cache/ (keyed on the dataset and the source-file signature) so later runs
+skip the slow read. Quality flags are applied on top of it on every run, because they depend on
+`rules`: the app's Filter rules page runs the same pipeline under user-set thresholds.
 """
 from __future__ import annotations
 
@@ -88,30 +89,44 @@ def _signature(ds: DS.Dataset) -> str:
         if p.exists():
             st = p.stat()
             h.update(f"{name}:{st.st_size}:{int(st.st_mtime)}".encode())
-    h.update(b"v4")  # bump when quality.py changes semantics
+    h.update(b"raw1")  # bump when load.py changes what it reads
     return h.hexdigest()[:12]
 
 
-def load_flagged_rt(ds: DS.Dataset, cache_dir: Path = C.CACHE_DIR,
-                    force: bool = False) -> tuple[pd.DataFrame, dict]:
-    """Flagged frame for every loaded well, from the parquet cache when the sources are unchanged."""
+def load_raw_rt(ds: DS.Dataset, cache_dir: Path = C.CACHE_DIR,
+                force: bool = False) -> tuple[pd.DataFrame, dict]:
+    """The parsed SCADA frame, from the parquet cache when the source files are unchanged.
+
+    Only the *read* is cached, not the flags: reading the source takes seconds and never changes,
+    while flagging takes a fraction of a second and depends on the thresholds in force, so a
+    different rule set costs a re-flag rather than a re-read.
+    """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     sig = _signature(ds)
-    pq = cache_dir / f"rt_flagged_{ds.cache_key}_{sig}.parquet"
+    pq = cache_dir / f"rt_raw_{ds.cache_key}_{sig}.parquet"
     meta = dict(cache_file=str(pq), from_cache=False)
     if pq.exists() and not force:
         d = pd.read_parquet(pq)
         if set(d["WELL_NAME"].unique()) >= set(ds.wells_all):
             meta["from_cache"] = True
             return d, meta
-    d = add_quality_flags(ds.load_rt())
+    d = ds.load_rt()
+    for pattern in (f"rt_raw_{ds.cache_key}_*.parquet", f"rt_flagged_{ds.cache_key}_*.parquet"):
+        for old in cache_dir.glob(pattern):
+            if old != pq:
+                old.unlink(missing_ok=True)
+    d.to_parquet(pq, index=False)
+    return d, meta
+
+
+def load_flagged_rt(ds: DS.Dataset, cache_dir: Path = C.CACHE_DIR, force: bool = False,
+                    rules: C.Thresholds = C.DEFAULT_THRESHOLDS) -> tuple[pd.DataFrame, dict]:
+    """Flagged frame for every loaded well, under the given quality rules."""
+    d, meta = load_raw_rt(ds, cache_dir, force)
+    d = add_quality_flags(d, rules)
     if ds.quality_hook is not None:
         d = ds.quality_hook(d)
-    for old in cache_dir.glob(f"rt_flagged_{ds.cache_key}_*.parquet"):
-        if old != pq:
-            old.unlink(missing_ok=True)
-    d.to_parquet(pq, index=False)
     return d, meta
 
 
@@ -142,11 +157,12 @@ def excluded_table(ds: DS.Dataset, d: pd.DataFrame, tests: pd.DataFrame, runs: p
 
 
 def run_pipeline(dataset: str | DS.Dataset = DS.DEFAULT_DATASET,
-                 cache_dir: Path = C.CACHE_DIR, force: bool = False) -> Results:
+                 cache_dir: Path = C.CACHE_DIR, force: bool = False,
+                 rules: C.Thresholds = C.DEFAULT_THRESHOLDS) -> Results:
     ds = DS.get(dataset)
 
     # ---------------------------------------------------------------- load (every well)
-    d, meta = load_flagged_rt(ds, cache_dir, force)
+    d, meta = load_flagged_rt(ds, cache_dir, force, rules)
     tests = ds.load_tests()
     esp = ds.load_static()
     runs = ds.load_runs(esp)
@@ -175,7 +191,7 @@ def run_pipeline(dataset: str | DS.Dataset = DS.DEFAULT_DATASET,
     # then keeping the analysed ones gives exactly the same numbers as mapping them alone. The
     # all-well tables are used only for the exclusion sensitivity panel.
     mapped_all = map_tests(d, tests, windows=ds.map_windows)
-    mm_all, cal_all = calibrate(mapped_all)
+    mm_all, cal_all = calibrate(mapped_all, rules)
     v_all = validate(mm_all, tests)
 
     analysed = ds.analysed(d["WELL_NAME"].unique())
@@ -207,7 +223,8 @@ def run_pipeline(dataset: str | DS.Dataset = DS.DEFAULT_DATASET,
     analyst = ds.load_analyst() if ds.load_analyst is not None else pd.DataFrame()
 
     meta.update(
-        dataset=ds.key, dataset_label=ds.label,
+        dataset=ds.key, dataset_label=ds.label, rules=rules, rules_key=rules.key,
+        rules_default=rules.is_default,
         n_rows=int(len(d)), n_rows_analysed=int(len(d_an)),
         n_tests=int(len(tests)), n_tests_analysed=int((~tests["excluded"]).sum()),
         n_matched=int(len(mm)), n_matched_all_wells=int(len(mm_all)),
@@ -253,6 +270,9 @@ def _round(df: pd.DataFrame, n: int) -> pd.DataFrame:
 def results_summary(res: Results) -> str:
     """Plain-text summary for the CLI / README."""
     lines = [f"== dataset: {res.meta['dataset_label']} ==",
+             ("" if res.meta.get("rules_default", True) else
+              "== NON-DEFAULT QUALITY RULES: "
+              + "; ".join(f"{k}: {a} -> {b}" for k, a, b in res.meta["rules"].changes()) + " =="),
              "", "== excluded wells ==",
              (res.excluded[["WELL_NAME", "excluded_by", "scada_rows", "well_tests", "pump"]].to_string(index=False)
               if len(res.excluded) else "(none)"),

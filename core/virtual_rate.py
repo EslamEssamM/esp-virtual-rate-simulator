@@ -262,3 +262,20 @@ def rate_with_k(d: pd.DataFrame, k: float, steady_only: bool = True) -> pd.Serie
     """Virtual rate for an arbitrary K (what-if), on the rows carrying a rate."""
     r = rate_rows(d, steady_only)
     return k * r["X"]
+
+
+def break_gaps(df: pd.DataFrame, max_gap: pd.Timedelta) -> pd.DataFrame:
+    """Insert a NaN row after every time step larger than `max_gap`, so a line chart breaks at
+    the gap instead of bridging it. Used by the row-level (30-min) charts and the Excel export."""
+    if df.empty:
+        return df
+    df = df.sort_values("TIME_STAMP").reset_index(drop=True)
+    gap_idx = np.flatnonzero((df["TIME_STAMP"].diff() > max_gap).to_numpy())
+    if len(gap_idx) == 0:
+        return df
+    filler = df.iloc[gap_idx - 1].copy()
+    filler["TIME_STAMP"] = filler["TIME_STAMP"] + pd.Timedelta(minutes=1)
+    for c in filler.columns:
+        if c != "TIME_STAMP":
+            filler[c] = np.nan if filler[c].dtype.kind in "fiu" else filler[c]
+    return pd.concat([df, filler]).sort_values("TIME_STAMP", kind="mergesort").reset_index(drop=True)

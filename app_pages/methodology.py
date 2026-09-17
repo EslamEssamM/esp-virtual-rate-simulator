@@ -8,8 +8,8 @@ from ui.sidebar import filters, wkey
 from ui.theme import METHOD_LABELS
 
 f = filters()
-ds = D.get_results(f["dataset"]).dataset
-res = D.get_results(f["dataset"])
+ds = D.get_results(f["scope"]).dataset
+res = D.get_results(f["scope"])
 cal = res.cal.set_index("WELL_NAME")
 
 st.title("Methodology", anchor=False)

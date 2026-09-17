@@ -1,4 +1,6 @@
 """Constants shared by the core modules."""
+import hashlib
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -68,6 +70,92 @@ LV_MV_SPLIT_V = 800.0
 ELEC_BASIS_LO = 0.8
 ELEC_BASIS_HI = 1.2
 FREQ_FFILL_LIMIT_H = 24
+
+
+@dataclass(frozen=True)
+class Thresholds:
+    """Every constraint the app puts on a SCADA row, in one immutable object.
+
+    The constants above are the defaults and are what the README and the test suite pin down.
+    The Filter rules page builds a different `Thresholds` from user input and runs the whole
+    pipeline on it, so a rule can be loosened or switched off and its effect on K, on the error
+    against the well tests and on the row counts is visible rather than assumed.
+
+    Frozen, so it can key a cache; all fields are plain numbers and booleans.
+    """
+    min_dp: float = MIN_DP
+    pip_lo: float = PIP_RANGE[0]
+    pip_hi: float = PIP_RANGE[1]
+    # No PDP ceiling by default: discharge pressure spans too wide a range across fields to bound
+    # sensibly, so the rule is offered rather than imposed. 0 means no ceiling. It is the lever for
+    # a gauge pegged at its rail - Meleiha M-80 ST sits at 6554 psi (a 16-bit limit) for 56,835
+    # rows whose dP is 4700-5800 psi, so the dP floor cannot catch them.
+    pdp_max: float = 0.0
+    whp_over_pdp: bool = True
+    pump_off_v: float = PUMP_OFF_V
+    pump_off_i: float = PUMP_OFF_I
+    freq_lo: float = FREQ_RANGE[0]
+    freq_hi: float = FREQ_RANGE[1]
+    freq_gate: bool = True
+    transient_window: int = TRANSIENT_WINDOW
+    transient_min_periods: int = TRANSIENT_MIN_PERIODS
+    transient_cv: float = TRANSIENT_CV
+    transient_gate: bool = True
+    elec_basis_lo: float = ELEC_BASIS_LO
+    elec_basis_hi: float = ELEC_BASIS_HI
+
+    @property
+    def is_default(self) -> bool:
+        return self == DEFAULT_THRESHOLDS
+
+    @property
+    def key(self) -> str:
+        """Short stable id, used in cache keys and file names. Empty when nothing was changed."""
+        if self.is_default:
+            return ""
+        raw = repr(tuple(getattr(self, f.name) for f in fields(self))).encode()
+        return hashlib.md5(raw).hexdigest()[:8]
+
+    def changes(self) -> list[tuple[str, str, str]]:
+        """(label, default, now) for every rule that differs from the default."""
+        out = []
+        for f in fields(self):
+            now, default = getattr(self, f.name), getattr(DEFAULT_THRESHOLDS, f.name)
+            if now != default:
+                out.append((RULE_LABELS.get(f.name, f.name), _rule_str(f.name, default),
+                            _rule_str(f.name, now)))
+        return out
+
+
+RULE_LABELS = {
+    "min_dp": "dP floor", "pip_lo": "PIP minimum", "pip_hi": "PIP maximum",
+    "pdp_max": "PDP ceiling",
+    "whp_over_pdp": "Reject WHP > PDP", "pump_off_v": "Pump off below voltage",
+    "pump_off_i": "Pump off below current", "freq_lo": "Frequency minimum",
+    "freq_hi": "Frequency maximum", "freq_gate": "Apply the frequency rule",
+    "transient_window": "Transient window (samples)",
+    "transient_min_periods": "Transient minimum samples",
+    "transient_cv": "Transient CV limit", "transient_gate": "Apply the transient rule",
+    "elec_basis_lo": "Calibrated voltage window, low",
+    "elec_basis_hi": "Calibrated voltage window, high",
+}
+
+
+def _rule_str(name: str, v) -> str:
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    if name == "min_dp" and not v:
+        return "off (dP > 0 only)"
+    if name == "pdp_max":
+        return "off (no ceiling)" if not v else f"{v:g}"
+    if name == "transient_cv":
+        return f"{v * 100:g} %"
+    if name in ("elec_basis_lo", "elec_basis_hi"):
+        return f"x {v:g}"
+    return f"{v:g}"
+
+
+DEFAULT_THRESHOLDS = Thresholds()
 
 # --- mapping (spec section 3) ---
 MAP_WINDOW_H = 12

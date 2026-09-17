@@ -1,11 +1,13 @@
 """Global sidebar controls; the chosen filters live in st.session_state['filters']."""
 from __future__ import annotations
 
+from dataclasses import asdict, fields
+
 import streamlit as st
 
 from core import config as C
 from core import datasets as DS
-from ui.data import FREQ_CODE, K_MODE_CODE, get_results
+from ui.data import FREQ_CODE, K_MODE_CODE, Scope, get_results
 
 
 def _on_dataset_change():
@@ -16,6 +18,31 @@ def _on_dataset_change():
     """
     st.session_state.pop("zoom_window", None)
     st.cache_data.clear()
+
+
+def rules() -> C.Thresholds:
+    """The quality rules in force. The Filter rules page writes them; everything else reads them
+    from here, so the whole app always runs on one rule set.
+
+    Session state holds a plain dict of field values rather than the object: the app survives a
+    code reload (which rebinds the class and would make an isinstance check fail) and an unknown
+    field left over from an older version is ignored instead of raising.
+    """
+    d = st.session_state.get("rules")
+    if not isinstance(d, dict):
+        return C.DEFAULT_THRESHOLDS
+    names = {f.name for f in fields(C.Thresholds)}
+    return C.Thresholds(**{k: v for k, v in d.items() if k in names})
+
+
+def set_rules(th: C.Thresholds):
+    st.session_state["rules"] = asdict(th)
+
+
+def pending_scope() -> Scope:
+    """The scope the sidebar is about to select. The entry point warms this one, so a rule change
+    does not run the pipeline twice - once on the previous scope and once on the new one."""
+    return Scope(st.session_state.get("dataset") or DS.DEFAULT_DATASET, rules())
 
 
 def wkey(name: str, dataset: str) -> str:
@@ -31,7 +58,8 @@ def render_sidebar() -> dict:
                               help="Each field has its own loaders, wells and electrical basis. "
                                    "The physics and every downstream step are the same.")
     ds = DS.get(ds_key)
-    res = get_results(ds.key)
+    scope = Scope(ds.key, rules())
+    res = get_results(scope)
     t0, t1 = res.meta["rt_start"].date(), res.meta["rt_end"].date()
     dr_key, wells_key = wkey("date_range", ds.key), wkey("wells", ds.key)
     if dr_key not in st.session_state:
@@ -78,6 +106,12 @@ def render_sidebar() -> dict:
                                      help="Overlay the previous analyst's workbook rate, dashed. Their calibration "
                                           "factor is recomputed at every row against the allocated rate, so it cannot "
                                           "be validated. It is never used for calibration or MAPE here.")
+        if not scope.rules.is_default:
+            st.warning(f"{len(scope.rules.changes())} quality rule(s) changed from the default. "
+                       "Every number in the app is computed under them.", icon=":material/rule_settings:")
+            if st.button("Restore default rules", icon=":material/restart_alt:", width="stretch"):
+                set_rules(C.DEFAULT_THRESHOLDS)
+                st.rerun()
         n_an, n_all = len(res.wells_analysed), len(res.wells_all)
         st.caption(f"SCADA {t0:%d %b %Y} to {t1:%d %b %Y} - {res.meta['n_rows']:,} rows over {n_all} wells, "
                    f"{n_an} analysed. {res.meta['n_tests_analysed']} well tests on the analysed wells, "
@@ -85,7 +119,7 @@ def render_sidebar() -> dict:
                    + ("Loaded from parquet cache." if res.meta.get("from_cache") else "Processed from source and cached."))
 
     selected = [w for w in ds.wells_all if w in set(wells)]
-    f = dict(dataset=ds.key, dataset_label=ds.label,
+    f = dict(dataset=ds.key, dataset_label=ds.label, scope=scope, rules=scope.rules,
              wells=tuple(selected),
              wells_analysed=tuple(w for w in selected if not _excluded(res, w)),
              wells_excluded=tuple(w for w in selected if _excluded(res, w)),

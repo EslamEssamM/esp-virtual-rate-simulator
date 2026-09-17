@@ -35,7 +35,8 @@ def flag_suspect(m: pd.DataFrame, z_max: float = C.ROBUST_Z_MAX) -> pd.DataFrame
     return mm.sort_values(["WELL_NAME", "TEST_TS"]).reset_index(drop=True)
 
 
-def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) -> pd.DataFrame:
+def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS,
+                      th: C.Thresholds = C.DEFAULT_THRESHOLDS) -> pd.DataFrame:
     """One row per calibrated well: K_single, spread, test count/date range, voltage basis
     window and the PHI calibration baseline.
 
@@ -57,8 +58,8 @@ def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) ->
             n_tests=int(len(g)),
             n_suspect=int(mm[(mm["WELL_NAME"] == w) & (mm["regime"] == regime) & mm["suspect"]].shape[0]),
             first_test=g["TEST_TS"].min(), last_test=g["TEST_TS"].max(),
-            V_lo=float(C.ELEC_BASIS_LO * g["RT_VOLTAGE"].min()),
-            V_hi=float(C.ELEC_BASIS_HI * g["RT_VOLTAGE"].max()),
+            V_lo=float(th.elec_basis_lo * g["RT_VOLTAGE"].min()),
+            V_hi=float(th.elec_basis_hi * g["RT_VOLTAGE"].max()),
             V_BASIS=g["V_BASIS"].mode().iloc[0],
             K_dh_single=float(g["K_dh"].median()) if g["K_dh"].notna().any() else np.nan,
             K_dh_min=float(g["K_dh"].min()) if g["K_dh"].notna().any() else np.nan,
@@ -110,7 +111,8 @@ def k_interp(times: pd.Series, cal_tests: pd.DataFrame, col: str = "K") -> np.nd
     return np.interp(tnum, cnum, c[col].to_numpy())
 
 
-def calibrate(m: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def calibrate(m: pd.DataFrame,
+              th: C.Thresholds = C.DEFAULT_THRESHOLDS) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Convenience: (matched tests with suspect flag, per-well calibration table)."""
     mm = flag_suspect(m)
-    return mm, calibration_table(mm)
+    return mm, calibration_table(mm, th=th)

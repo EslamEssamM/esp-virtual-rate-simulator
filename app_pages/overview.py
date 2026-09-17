@@ -8,9 +8,9 @@ from ui.components import dataset_notes_for, excluded_banner, kpi_tiles, well_he
 from ui.sidebar import filters
 
 f = filters()
-res = D.get_results(f["dataset"])
+res = D.get_results(f["scope"])
 excluded_reasons = dict(zip(res.excluded["WELL_NAME"], res.excluded["reason"])) if len(res.excluded) else {}
-last_tests = D.get_last_tests(f["dataset"]).set_index("WELL_NAME")
+last_tests = D.get_last_tests(f["scope"]).set_index("WELL_NAME")
 cal = res.cal
 
 st.title("Overview", anchor=False)
@@ -35,14 +35,14 @@ if not f["wells"]:
     st.stop()
 
 for well in f["wells"]:
-    shade = D.shading(f["dataset"], well)
+    shade = D.shading(f["scope"], well)
     if well in excluded_reasons:
         with st.container(border=True):
             well_header(well, shade.get("run", {}), extra="loaded, not analysed")
             excluded_banner(well, "the virtual-rate analysis", excluded_reasons[well])
             st.caption("Its raw signals can still be inspected on the Data quality page.")
         continue
-    stats = D.period_stats(f["dataset"], well, f["start"], f["end"], f["k_mode"], f["steady_only"], f["wc_correction"])
+    stats = D.period_stats(f["scope"], well, f["start"], f["end"], f["k_mode"], f["steady_only"], f["wc_correction"])
     with st.container(border=True):
         well_header(well, shade.get("run", {}),
                     extra=f"{stats['rows']:,} rows in period, {stats['rate_rows']:,} with a steady calibrated rate")
@@ -50,12 +50,12 @@ for well in f["wells"]:
             st.caption("No SCADA rows in the selected period for this well.")
             continue
         run_now = "previous" if (pd.notna(shade.get("install_date")) and pd.Timestamp(f["end"]) < shade["install_date"]) else "current"
-        gas = D.gas_by_well(f["dataset"])
+        gas = D.gas_by_well(f["scope"])
         kpi_tiles(stats, D.cal_row(cal, well),
                   last_tests.loc[well] if well in last_tests.index else None, f["k_mode"], run_now,
                   f["wc_correction"], gas.loc[well] if len(gas) and well in gas.index else None,
-                  D.mape_by_well(f["dataset"]), well, res.dataset.has_bubble_point)
-        series = D.rate_series(f["dataset"], well, f["start"], f["end"], f["freq"], f["steady_only"])
-        tests = D.tests_in_range(f["dataset"], well, f["start"], f["end"])
+                  D.mape_by_well(f["scope"]), well, res.dataset.has_bubble_point)
+        series = D.rate_series(f["scope"], well, f["start"], f["end"], f["freq"], f["steady_only"])
+        tests = D.tests_in_range(f["scope"], well, f["start"], f["end"])
         st.plotly_chart(rate_chart(well, series, tests, f["freq"], f["steady_only"], f["k_mode"], shade, zoom=zoom),
                         key=f"rate_{well}", config=dict(displaylogo=False, scrollZoom=False))

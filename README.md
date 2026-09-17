@@ -211,13 +211,14 @@ leave M1 and M2 untouched.
 
 ```
 app.py              Streamlit entry point (sidebar + navigation, no computation)
-app_pages/          one script per page
+app_pages/          one script per page (overview, data quality, calibration, filter rules,
+                    methodology, export)
 ui/                 presentation helpers: cached data access, sidebar, Plotly chart builders
 .streamlit/         theme
 core/
-  config.py         well scope (WELLS_ALL / EXCLUDED_WELLS / WELLS), thresholds and file paths
+  config.py         well scope (WELLS_ALL / EXCLUDED_WELLS / WELLS), Thresholds, file paths
   load.py           read the two input files, coerce types
-  quality.py        row flags (nothing is dropped), derived signals, FREQ_FILLED
+  quality.py        row flags under a Thresholds set (nothing is dropped), derived signals
   mapping.py        well test <-> SCADA matching (+/-12 h, widen to +/-24 h)
   calibration.py    suspect screening, K_single, K_interp
   validation.py     M1 leave-one-out, M2 walk-forward, baseline last-test; APE / MAPE
@@ -225,10 +226,87 @@ core/
   pvt.py            B_liq water-cut correction and the free-gas-at-intake indicator
   diagnosis.py      rule-based events (no diagnostic matrix)
   pipeline.py       end-to-end run with parquet cache
+  export_excel.py   the Excel workbook: native Tables, charts and live K formulas
 tests/              pytest suite
 data/               read-only inputs
 cache/              parquet cache (created on first run)
 ```
+
+## Filter rules
+
+Every row-level constraint lives in one frozen `core.config.Thresholds` object and is threaded
+through the whole pipeline, so the **Filter rules** page can rebuild it from user input and re-run
+everything - flags, matching, K, the error against the well tests, the events and the exports - on
+the new rules. The page shows what each rule is rejecting right now (over all rows, and over
+pump-on rows only, which is how you tell a rule that is doing work from one that is re-flagging
+rows another rule already removed), lets every threshold be changed or switched off, and then
+compares the result against the defaults: rows carrying a rate, matched and suspect tests, MAPE per
+method and K per well. The sidebar warns on every page while non-default rules are in force, and an
+export built under them records them on its Read me sheet and carries a `_rules-<id>` suffix.
+
+Re-running under new rules takes a few seconds: the parquet cache now holds the *parsed* SCADA
+frame rather than the flagged one, so a rule change costs a re-flag (0.1-0.3 s) rather than a
+re-read of the source files.
+
+Defaults are unchanged and are what the numbers in this README and the test suite pin down.
+
+### The dP floor, measured
+
+The 300 psi floor on `dP = PDP - PIP` was a round number rather than a derived one, so it is worth
+knowing what it does. Running both fields with the floor at 300 and at 0:
+
+| | dP > 300 (default) | no dP floor |
+|---|---|---|
+| GC31 rows carrying a rate | 50,041 | 50,041 |
+| GC31 K per well | 119.27 / 13.17 / 22.14 | 119.27 / 13.17 / 22.14 |
+| GC31 MAPE M1 / M2 | 8.4 % / 10.6 % | 8.4 % / 10.6 % |
+| Meleiha rows carrying a rate | 244,450 | 246,930 |
+| Meleiha matched tests (suspect) | 48 (5) | 49 (6) |
+| Meleiha MAPE M1 / M2 | 14.5 % / 18.4 % | 24.3 % / 30.8 % |
+
+On **GC31 the rule does nothing**: every row it rejects is already rejected for a missing pressure
+or a stopped pump. On **Meleiha it is doing real work** - removing it admits 2,480 rows on M-80 ST
+at a `dP` of exactly 199.4 psi (a frozen reading, not a measurement), which drags in one more well
+test and nearly doubles the error. So the floor stays as the default and is made adjustable rather
+than removed; `tests/test_rules.py` pins both halves of this down.
+
+### The PDP ceiling
+
+There is deliberately **no PDP ceiling by default** - discharge pressure spans too wide a range
+between fields to bound sensibly - but one is available as a rule. It is the lever for a gauge
+pegged at its rail: Meleiha M-80 ST reports `PDP = 6554 psi` (a 16-bit limit) for 56,835 rows, and
+because PIP moves underneath it the resulting `dP` of 4,700-5,800 psi looks reasonable, so the dP
+floor cannot see it. 49,068 of those rows carry a rate today; setting the ceiling to 6,000 psi
+removes them and the error falls from 14.5 % to 12.7 % on M1. SWM A-2-2 on the same field reaches
+53,947 psi, which is why one number cannot be imposed on every well.
+
+## Export to Excel
+
+The **Export to Excel** page writes one workbook holding every table in the app, the calibration
+factor of each well and one tab per well carrying the same charts. It follows the sidebar, so the
+file matches what is on screen: same wells, same period, same K mode, same resolution.
+
+Everything is written as native Excel, not as pictures of the app:
+
+- every table is an Excel **Table**, so it filters, sorts, extends and can be referenced by column
+  name; number formats, freeze panes, data bars and colour scales are applied where they help;
+- every chart is a real **Excel chart** bound to cell ranges - rate and well tests, PHI, K per
+  test, pressures, voltage and current, water cut and B_liq, and the monthly row categories;
+- the numbers stay **live**. `K = Q test / X` at each matched test, `K single` is the median of
+  the well's non-suspect tests, and each well tab has an editable K cell that drives a
+  `Q at K cell` column and its chart series. Tick a test as suspect, or type another K, and the
+  calibration, the rates, the charts and the per-test errors all recalculate - the same thing the
+  app's what-if slider and suspect screen do. The app's own `Q virtual` column never moves, so the
+  workbook always shows both.
+
+A "values only" switch produces the same workbook with every formula replaced by its number.
+Sheets: Read me (index and how-to), Wells overview, Calibration K, Matched tests, All well tests,
+Validation, Error by method, Data quality, Events, PVT and gas, Wells and pumps, then one tab per
+analysed well. Excluded wells appear in the tables with their reason but get no tab: they carry no
+K, so there is nothing to chart.
+
+Daily or hourly exports are a few hundred kB and build in a couple of seconds. A 30-minute export
+of the full history is roughly 10 MB and takes a minute; the page warns before you ask for one.
 
 ## Known dataset facts
 

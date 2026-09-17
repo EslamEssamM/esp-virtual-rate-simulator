@@ -7,8 +7,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from core import config as C
 from core import datasets as DS
 from core import meleiha as ML
+from core.pipeline import run_pipeline
 
 WELLS = ["M-145", "M-54", "M-80 ST", "SWM A-2-2", "SWM A-2x ST1"]
 
@@ -88,11 +90,29 @@ def test_m54_gauge_failure_is_excluded(mel):
     assert mel.rt["gauge_frozen"].sum() > 0
 
 
-def test_pressure_rail_is_rejected(mel):
-    """M-80 ST pegs PDP at 6554 psi (a 16-bit rail); those rows must not carry a rate."""
-    d = mel.rt[(mel.rt["WELL_NAME"] == "M-80 ST") & (mel.rt["PDP"].round(0) == 6554)]
-    assert len(d) > 40_000
-    assert not d["rate_ok"].any()
+def test_pressure_rail_needs_a_pdp_ceiling(mel):
+    """M-80 ST pegs PDP at 6554 psi (a 16-bit rail).
+
+    No PDP ceiling is applied by default - discharge pressure spans too wide a range between
+    fields to bound sensibly, and SWM A-2-2 on this same field reaches 53,947 psi - so these rows
+    do carry a rate until someone sets one. They are the case the dP floor cannot catch: PIP moves
+    underneath the pegged value, so dP stays a plausible 4,700-5,800 psi.
+
+    The Filter rules page exposes the ceiling for exactly this. Setting it removes the rail and
+    the error against the well tests falls, which is the evidence for setting it on this field.
+    """
+    rail = mel.rt[(mel.rt["WELL_NAME"] == "M-80 ST") & (mel.rt["PDP"].round(0) == 6554)]
+    assert len(rail) > 40_000
+    assert rail["dP"].min() > C.MIN_DP, "the dP floor cannot see a pegged PDP"
+    assert rail["rate_ok"].any(), "no ceiling by default, so the rail is not rejected"
+
+    capped = run_pipeline("Meleiha", rules=C.Thresholds(pdp_max=6000.0))
+    capped_rail = capped.rt[(capped.rt["WELL_NAME"] == "M-80 ST")
+                            & (capped.rt["PDP"].round(0) == 6554)]
+    assert not capped_rail["rate_ok"].any()
+    base = mel.mape_overall.set_index("method")["MAPE_all"]
+    with_cap = capped.mape_overall.set_index("method")["MAPE_all"]
+    assert with_cap["M1_LOO"] < base["M1_LOO"]
 
 
 # --------------------------------------------------------------------------- regimes

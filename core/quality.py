@@ -18,15 +18,17 @@ FLAG_COLUMNS = [
 EXCLUSION_FLAGS = ["missing_elec", "missing_press", "pump_off", "bad_dP", "bad_press_range", "bad_freq"]
 
 
-def _rolling_cv(s: pd.Series) -> pd.Series:
-    r = s.rolling(C.TRANSIENT_WINDOW, min_periods=C.TRANSIENT_MIN_PERIODS)
+def _rolling_cv(s: pd.Series, th: C.Thresholds) -> pd.Series:
+    r = s.rolling(th.transient_window, min_periods=th.transient_min_periods)
     return r.std() / r.mean().abs()
 
 
-def add_quality_flags(d: pd.DataFrame) -> pd.DataFrame:
+def add_quality_flags(d: pd.DataFrame, th: C.Thresholds = C.DEFAULT_THRESHOLDS) -> pd.DataFrame:
     """Return a copy of the SCADA frame with flags and derived columns added.
 
     Expects the frame sorted by (WELL_NAME, TIME_STAMP) as produced by load.load_rt.
+    `th` carries the thresholds; the defaults are the ones the README and the tests pin down,
+    and the Filter rules page passes a user-built set instead.
     """
     d = d.copy()
     V, I, F = d["VOLTAGE"], d["AMPERAGE"], d["FREQUENCY"]
@@ -35,17 +37,27 @@ def add_quality_flags(d: pd.DataFrame) -> pd.DataFrame:
     # --- flags -------------------------------------------------------------
     d["missing_elec"] = V.isna() | I.isna()            # X cannot be formed without V and I
     d["missing_press"] = d["PIP"].isna() | d["PDP"].isna()
-    d["pump_off"] = (V < C.PUMP_OFF_V) | (I < C.PUMP_OFF_I) | (F == 0)
-    d["bad_dP"] = ~(dP > C.MIN_DP)                       # also true when dP is NaN
-    # PDP has no upper/lower gate: discharge pressure varies too much between fields to bound
-    # sensibly, and a bad reading is caught by the dP rule or by PIP instead.
-    d["bad_press_range"] = ~d["PIP"].between(*C.PIP_RANGE) | (d["WHP"] > d["PDP"])
-    d["bad_freq"] = F.notna() & (F != 0) & ~F.between(*C.FREQ_RANGE)
+    d["pump_off"] = (V < th.pump_off_v) | (I < th.pump_off_i) | (F == 0)
+    # A zero floor switches the rule off, but dP must stay strictly positive whatever the
+    # setting: X = sqrt(3)*V*I/dP is infinite at dP = 0 and negative below it.
+    d["bad_dP"] = ~(dP > max(th.min_dp, 0.0))            # also true when dP is NaN
+    # PDP carries no ceiling by default: discharge pressure varies too much between fields to
+    # bound sensibly, and a bad reading usually fails the dP rule or the PIP range instead. A
+    # gauge pegged at its rail is the exception - it holds a plausible dP - so the ceiling is
+    # available as a rule the user sets per field.
+    d["bad_press_range"] = ~d["PIP"].between(th.pip_lo, th.pip_hi)
+    if th.pdp_max:
+        d["bad_press_range"] |= d["PDP"] >= th.pdp_max
+    if th.whp_over_pdp:
+        d["bad_press_range"] |= d["WHP"] > d["PDP"]
+    d["bad_freq"] = (F.notna() & (F != 0) & ~F.between(th.freq_lo, th.freq_hi)
+                     if th.freq_gate else pd.Series(False, index=d.index))
 
     g_well = d.groupby("WELL_NAME", sort=False)
-    amp_cv = g_well["AMPERAGE"].transform(_rolling_cv)
-    dp_cv = dP.groupby(d["WELL_NAME"], sort=False).transform(_rolling_cv)
-    d["transient"] = (amp_cv > C.TRANSIENT_CV) | (dp_cv > C.TRANSIENT_CV)
+    amp_cv = g_well["AMPERAGE"].transform(_rolling_cv, th)
+    dp_cv = dP.groupby(d["WELL_NAME"], sort=False).transform(_rolling_cv, th)
+    d["transient"] = ((amp_cv > th.transient_cv) | (dp_cv > th.transient_cv)
+                      if th.transient_gate else pd.Series(False, index=d.index))
     d["amp_cv"] = amp_cv
     d["dP_cv"] = dp_cv
 
