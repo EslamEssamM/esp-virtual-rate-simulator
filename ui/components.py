@@ -125,11 +125,12 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
     k_label = ("K_dh interpolated" if k_mode == "interp" else "K_dh single") if wc_correction \
         else ("K interpolated" if k_mode == "interp" else "K single")
     k_value = stats["K_dh"] if wc_correction else stats["K"]
-    n = 12 if wc_correction else 11
-    # four tiles per row: any more and the labels ellipsize on a laptop screen
+    n = 11 if wc_correction else 10
+    # Four tiles per row: any more and the labels ellipsize on a laptop screen. Every row is laid
+    # out as four columns even when the last one is short, so a tile is the same width everywhere.
     c = []
-    for start in range(0, n, 4):
-        c += st.columns(min(4, n - start), gap="small")
+    for _ in range(-(-n // 4)):
+        c += st.columns(4, gap="small")
     with c[0]:
         st.metric("Virtual rate, BFPD", fmt_num(last_rate, 0), delta_rate, delta_color="off", border=True,
                   help=f"Last steady row in the selected period ({stats['rate_last_ts']:%Y-%m-%d %H:%M})." if pd.notna(stats["rate_last_ts"]) else "No steady rows with a calibrated rate in this period.")
@@ -171,13 +172,8 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
     with c[9]:
         st.metric("Uptime, %", fmt_num(stats["uptime_pct"], 0), border=True,
                   help="Rows not flagged pump_off (V >= 100 V, I >= 5 A, Hz != 0) / all rows in the period.")
-    with c[10]:
-        st.metric("Metered liquid, bbl", fmt_num(stats["cum_bbl"], 0), f"{stats['rate_coverage_pct']:.0f} % of hours",
-                  delta_color="off", delta_arrow="off", border=True,
-                  help="Sum of hourly median virtual rate x 1 h over hours that have a valid steady rate. Hours without a rate "
-                       "contribute nothing, so this is metered liquid, not calendar production.")
     if wc_correction:
-        with c[11]:
+        with c[10]:
             eff = stats.get("wc_effect_pct")
             st.metric("WC correction now, %", (f"{eff:+.1f}" if pd.notna(eff) else "n/a"),
                       f"B_liq {stats['med_B_LIQ']:.3f} at WC {stats['med_WC_FRAC'] * 100:.0f} %"
