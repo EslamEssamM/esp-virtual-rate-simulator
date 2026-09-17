@@ -125,7 +125,7 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
     k_label = ("K_dh interpolated" if k_mode == "interp" else "K_dh single") if wc_correction \
         else ("K interpolated" if k_mode == "interp" else "K single")
     k_value = stats["K_dh"] if wc_correction else stats["K"]
-    n = 11 if wc_correction else 10
+    n = 9 if wc_correction else 8
     # Four tiles per row: any more and the labels ellipsize on a laptop screen. Every row is laid
     # out as four columns even when the last one is short, so a tile is the same width everywhere.
     c = []
@@ -166,14 +166,8 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
                   delta_color="off", border=True, help=PHI_HELP)
     with c[7]:
         intake_tile(stats, gas)
-    with c[8]:
-        st.metric("Data quality, %", fmt_num(stats["quality_pct"], 0), border=True,
-                  help="Usable rows / all rows in the period (no missing V/I/PIP/PDP, pump on, dP > 300 psi, pressures and Hz in range).")
-    with c[9]:
-        st.metric("Uptime, %", fmt_num(stats["uptime_pct"], 0), border=True,
-                  help="Rows not flagged pump_off (V >= 100 V, I >= 5 A, Hz != 0) / all rows in the period.")
     if wc_correction:
-        with c[10]:
+        with c[8]:
             eff = stats.get("wc_effect_pct")
             st.metric("WC correction now, %", (f"{eff:+.1f}" if pd.notna(eff) else "n/a"),
                       f"B_liq {stats['med_B_LIQ']:.3f} at WC {stats['med_WC_FRAC'] * 100:.0f} %"
