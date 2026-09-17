@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
-from core.config import WELLS_ALL
+from core import datasets as DS
 
 # Categorical slots from the validated reference palette, in fixed order. A well keeps its
 # colour whatever the selection is; the mapping is positional over WELLS_ALL so a new or
@@ -11,9 +11,21 @@ from core.config import WELLS_ALL
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#eda100", "#e87ba4", "#008300", "#e34948"]
 PALETTE_RGB = [(42, 120, 214), (235, 104, 52), (27, 175, 122), (74, 58, 167),
                (237, 161, 0), (232, 123, 164), (0, 131, 0), (227, 73, 72)]
-WELL_COLORS = {w: PALETTE[i % len(PALETTE)] for i, w in enumerate(WELLS_ALL)}
-WELL_LIGHT = {w: "rgba({}, {}, {}, 0.35)".format(*PALETTE_RGB[i % len(PALETTE_RGB)])
-              for i, w in enumerate(WELLS_ALL)}
+def _all_wells() -> list[str]:
+    """Every well of every dataset, so a colour is fixed per well across the whole app."""
+    out = []
+    for ds in DS.DATASETS.values():
+        out += [w for w in ds.wells_all if w not in out]
+    return out
+
+
+ALL_WELLS = _all_wells()
+# the slot restarts per dataset, so each field's first well is blue, its second orange, and so on
+WELL_COLORS, WELL_LIGHT = {}, {}
+for _ds in DS.DATASETS.values():
+    for _i, _w in enumerate(_ds.wells_all):
+        WELL_COLORS.setdefault(_w, PALETTE[_i % len(PALETTE)])
+        WELL_LIGHT.setdefault(_w, "rgba({}, {}, {}, 0.35)".format(*PALETTE_RGB[_i % len(PALETTE_RGB)]))
 EXCLUDED_COLOR = "#898781"        # excluded wells are drawn in muted grey, never in a series hue
 
 
@@ -52,6 +64,7 @@ CATEGORY_COLORS = {
     "bad_dP": "#eda100",
     "bad_press_range": "#e34948",
     "bad_freq": "#4a3aa7",
+    "gauge_frozen": "#e87ba4",
 }
 CATEGORY_LABELS = {
     "steady": "Steady (rate computed)",
@@ -63,6 +76,7 @@ CATEGORY_LABELS = {
     "bad_dP": "dP <= 300 psi",
     "bad_press_range": "Pressure out of range",
     "bad_freq": "Frequency out of range",
+    "gauge_frozen": "Gauge frozen (no PIP/PDP change for a day)",
 }
 EVENT_COLORS = {
     "SCADA_GAP": "#c3c2b7", "PUMP_OFF": "#52514e", "VOLTAGE_BASIS_CHANGE": "#eb6834", "VOLTAGE_STEP": "#eda100",

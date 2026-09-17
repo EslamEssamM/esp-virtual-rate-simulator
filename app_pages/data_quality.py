@@ -7,18 +7,19 @@ from core.virtual_rate import gap_intervals, pump_off_intervals
 from ui import data as D
 from ui.charts import intake_vs_pb_chart, quality_stack, signal_viewer
 from ui.components import excluded_notice
-from ui.sidebar import filters
+from ui.sidebar import filters, wkey
 from ui.theme import CATEGORY_LABELS
 
 f = filters()
-res = D.get_results()
+res = D.get_results(f["dataset"])
 wells = list(f["wells"])
 
 st.title("Data quality", anchor=False)
 st.caption("Every SCADA row is kept and flagged; nothing is dropped silently. "
            "A row needs to be steady (usable and not transient) and on the calibrated voltage basis to carry a rate. "
            "This is the one page that also shows wells excluded from the analysis.")
-excluded_notice(f["wells_excluded"], "the analysis; its rows and raw signals are shown here")
+excluded_notice(f["wells_excluded"], "the analysis; its rows and raw signals are shown here",
+                dict(zip(res.excluded["WELL_NAME"], res.excluded["reason"])) if len(res.excluded) else {})
 
 if not wells:
     st.warning("Select at least one well in the sidebar.", icon=":material/filter_alt:")
@@ -64,7 +65,7 @@ with st.expander("Flag rules", icon=":material/rule:"):
 | missing_press | PIP or PDP null |
 | pump_off | VOLTAGE < 100 V or AMPERAGE < 5 A or FREQUENCY = 0 |
 | bad_dP | PDP - PIP <= 300 psi |
-| bad_press_range | PIP outside 50-5000 psi, PDP outside 300-6000 psi, or WHP > PDP |
+| bad_press_range | PIP outside 50-5000 psi, or WHP > PDP (PDP itself is not bounded) |
 | bad_freq | FREQUENCY present, not 0 and outside 30-70 Hz |
 | transient | rolling 6-sample CV of AMPERAGE or of dP > 5 % (per well, min 3 samples) |
 | temp_unit_c | MT < 150 or INTAKE_TEMP < 100: values are degC, converted to degF for display |
@@ -84,18 +85,18 @@ st.plotly_chart(quality_stack(mf, wells), key="quality_stack", config=dict(displ
 # ---------------------------------------------------------------- raw signal viewer
 st.subheader("Raw signal viewer", anchor=False)
 with st.container(horizontal=True, vertical_alignment="bottom"):
-    well = st.selectbox("Well", wells, key="dq_well", width=220)
+    well = st.selectbox("Well", wells, key=wkey("dq_well", f["dataset"]), width=220)
     st.caption(f"Resolution: {D.FREQ_LABEL[f['freq']]} (sidebar). Grey bands: pump off > 6 h; light bands: SCADA gaps > 2 days. "
                "All rows are shown here, including excluded ones.")
-s = D.signal_series(well, f["start"], f["end"], f["freq"])
+s = D.signal_series(f["dataset"], well, f["start"], f["end"], f["freq"])
 if s.empty:
     st.caption("No rows in the selected period.")
 else:
-    ev = D.window_events((well,), f["start"], f["end"])
+    ev = D.window_events(f["dataset"], (well,), f["start"], f["end"])
     st.plotly_chart(signal_viewer(well, s, f["freq"], pump_off_intervals(ev, well), gap_intervals(ev, well)),
                     key="signal_viewer", config=dict(displaylogo=False))
     # --- intake pressure against the bubble point ---
-    gas = D.gas_by_well()
+    gas = D.gas_by_well(f["dataset"])
     if well in gas.index:
         g = gas.loc[well]
         st.markdown("**Intake pressure vs bubble point**")
@@ -107,7 +108,7 @@ else:
         st.plotly_chart(intake_vs_pb_chart(well, s, float(g["Pb"]), g.to_dict()),
                         key="intake_pb", config=dict(displaylogo=False))
 
-    cats = D.well_slice(well, f["start"], f["end"])
+    cats = D.well_slice(f["dataset"], well, f["start"], f["end"])
     if len(cats):
         from core.quality import exclusion_reason
         counts = exclusion_reason(cats).value_counts()

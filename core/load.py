@@ -123,5 +123,6 @@ def run_label(times: pd.Series, well: pd.Series, runs: pd.DataFrame) -> pd.Serie
     """'current' if the timestamp is on/after the well's current-run install date, else 'previous'."""
     inst = runs.set_index("WELL_NAME")["install_date"]
     boundary = well.map(inst)
-    return pd.Series(np.where(boundary.notna() & (pd.to_datetime(times) >= boundary), "current", "previous"),
+    # a dataset without installation dates has a single, current run
+    return pd.Series(np.where(boundary.isna() | (pd.to_datetime(times) >= boundary), "current", "previous"),
                      index=times.index)

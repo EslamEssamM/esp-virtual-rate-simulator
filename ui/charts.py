@@ -37,7 +37,7 @@ def _add_intervals(fig, intervals, color, opacity, label=None, row="all", positi
 
 def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, steady_only: bool, k_mode: str,
                shade: dict, height: int = 480, zoom: tuple | None = None, title: str | None = None,
-               wc_correction: bool = False) -> go.Figure:
+               wc_correction: bool = False, analyst: pd.DataFrame | None = None) -> go.Figure:
     """Q_virtual (top) and PHI (bottom) with well tests, gaps, uncalibrated basis and run markers."""
     q = q_col(k_mode, wc_correction)
     color = well_color(well)
@@ -83,6 +83,15 @@ def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, 
                             customdata=bad["K"], hovertemplate="suspect test %{y:,.0f} BFPD, K=%{customdata:.2f}<extra></extra>",
                             row=1, col=1)
 
+    # the previous analyst's workbook series, for comparison only
+    if analyst is not None and len(analyst):
+        for col, name, dash in [("Q_ANALYST_CALIBRATED", "previous analyst (workbook)", "dash"),
+                                ("Q_LIQ_ALLOCATED", "previous analyst (allocated)", "dot")]:
+            if col in analyst.columns and analyst[col].notna().any():
+                fig.add_scatter(x=analyst["TIME_STAMP"], y=analyst[col], mode="lines", name=name,
+                                line=dict(color=MUTED, width=1.6, dash=dash), connectgaps=False,
+                                hovertemplate="%{y:,.0f} BFPD<extra>" + name + "</extra>", row=1, col=1)
+
     # PHI strip
     if not series.empty and "PHI" in series:
         fig.add_hrect(y0=0.95, y1=1.05, fillcolor=GOOD, opacity=0.10, line_width=0, layer="below", row=2, col=1)
@@ -93,6 +102,11 @@ def rate_chart(well: str, series: pd.DataFrame, tests: pd.DataFrame, freq: str, 
     _add_intervals(fig, shade.get("gaps", []), "#898781", 0.14, "SCADA gap", position="top right")
     _add_intervals(fig, shade.get("uncalibrated", []), WARNING, 0.16, "uncalibrated V basis")
     _add_intervals(fig, shade.get("previous_run", []), "#4a3aa7", 0.07, "previous pump run", position="bottom left")
+    for i, t in enumerate(shade.get("regimes", [])):
+        fig.add_vline(x=t, line=dict(color=SERIOUS, width=1.8, dash="dot"), row="all", col=1)
+        fig.add_annotation(x=t, y=0.97, yref="paper", text=f"regime {i + 2} starts {pd.Timestamp(t):%d %b %Y}",
+                           showarrow=False, xanchor="left", font=dict(size=12, color=SERIOUS), yanchor="top",
+                           bgcolor="rgba(255,255,255,0.75)")
     inst = shade.get("install_date")
     run = shade.get("run", {})
     if inst is not None and pd.notna(inst) and not series.empty:
@@ -155,16 +169,33 @@ def quality_stack(mf: pd.DataFrame, wells: list[str], height_per_well: int = 210
     return fig
 
 
-def k_chart(well: str, mm_w: pd.DataFrame, cal_row: pd.Series | None, start, end, height: int = 340) -> go.Figure:
+def k_chart(well: str, mm_w: pd.DataFrame, cal_w, start, end, height: int = 340) -> go.Figure:
+    """K at each matched test, the interpolated curve, and one K_single per electrical regime.
+
+    A well that changed transformer ratio or stage count mid-life has one calibration row per
+    regime, so its curve is drawn in segments rather than as a single line across the change.
+    """
     fig = go.Figure()
     color = well_color(well)
-    if cal_row is not None and len(mm_w):
-        grid = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq="D")
-        fig.add_scatter(x=grid, y=k_interp(pd.Series(grid), mm_w), mode="lines", name="K interpolated",
-                        line=dict(color=color, width=2), hovertemplate="K interp %{y:.2f}<extra></extra>")
-        fig.add_hline(y=cal_row["K_single"], line=dict(color=color, width=1.2, dash="dash"),
-                      annotation_text=f"K single = {cal_row['K_single']:.2f}", annotation_position="bottom right",
-                      annotation_font=dict(size=12, color=INK2))
+    cal_w = pd.DataFrame() if cal_w is None else (cal_w.to_frame().T if isinstance(cal_w, pd.Series) else cal_w)
+    multi = len(cal_w) > 1
+    if len(cal_w) and len(mm_w):
+        for _, cr in cal_w.iterrows():
+            regime = int(cr["regime"]) if "regime" in cr.index and pd.notna(cr["regime"]) else 1
+            mr = mm_w[mm_w["regime"] == regime] if "regime" in mm_w.columns and multi else mm_w
+            if not len(mr):
+                continue
+            lo = mr["TEST_TS"].min() if multi else pd.Timestamp(start)
+            hi = mr["TEST_TS"].max() if multi else pd.Timestamp(end)
+            grid = pd.DatetimeIndex([lo, hi]) if lo == hi else pd.date_range(lo, hi, freq="D")
+            suffix = f" (regime {regime})" if multi else ""
+            fig.add_scatter(x=grid, y=k_interp(pd.Series(grid), mr), mode="lines",
+                            name="K interpolated" + suffix, line=dict(color=color, width=2),
+                            hovertemplate="K interp %{y:.2f}<extra></extra>")
+            fig.add_scatter(x=[grid[0], grid[-1]], y=[float(cr["K_single"])] * 2, mode="lines",
+                            name=f"K single {float(cr['K_single']):.1f}" + suffix,
+                            line=dict(color=color, width=1.2, dash="dash"),
+                            hovertemplate="K single %{y:.2f}<extra></extra>")
     good = mm_w[~mm_w["suspect"]]
     bad = mm_w[mm_w["suspect"]]
     if len(good):

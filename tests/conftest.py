@@ -12,5 +12,11 @@ from core.pipeline import run_pipeline  # noqa: E402
 
 @pytest.fixture(scope="session")
 def res():
-    """Full pipeline on the real demonstration dataset (uses the parquet cache when present)."""
-    return run_pipeline()
+    """Full pipeline on GC31 (uses the parquet cache when present)."""
+    return run_pipeline("GC31")
+
+
+@pytest.fixture(scope="session")
+def mel():
+    """Full pipeline on the Meleiha field."""
+    return run_pipeline("Meleiha")

@@ -31,6 +31,11 @@ WELLS = [w for w in WELLS_ALL if w not in EXCLUDED_WELLS]
 # Minimum matched tests a well needs before it can be calibrated and validated.
 MIN_MATCHED_TESTS = 2
 
+# Calibration group key. A well normally has one electrical regime, so `regime` is 1 and this is
+# equivalent to grouping by well. A well whose transformer ratio or stage count changed mid-life
+# (Meleiha M-80 ST) is split into regimes and gets one K per regime.
+GROUP = ["WELL_NAME", "regime"]
+
 
 def is_excluded(well: str) -> bool:
     return well in EXCLUDED_WELLS
@@ -51,7 +56,8 @@ PUMP_OFF_V = 100.0
 PUMP_OFF_I = 5.0
 MIN_DP = 300.0
 PIP_RANGE = (50.0, 5000.0)
-PDP_RANGE = (300.0, 6000.0)
+# No PDP range gate: discharge pressure spans too wide a range across fields to bound sensibly.
+# A bad PDP still fails the dP rule (dP <= 300 psi) or the WHP > PDP check.
 FREQ_RANGE = (30.0, 70.0)
 TRANSIENT_WINDOW = 6
 TRANSIENT_MIN_PERIODS = 3

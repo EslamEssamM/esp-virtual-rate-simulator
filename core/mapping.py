@@ -11,25 +11,29 @@ RT_MEDIAN_COLS = ["VOLTAGE", "AMPERAGE", "FREQ_FILLED", "PIP", "PDP", "WHP", "dP
 
 def map_tests(d: pd.DataFrame, t: pd.DataFrame,
               win_h: int = C.MAP_WINDOW_H, wide_h: int = C.MAP_WINDOW_WIDE_H,
-              min_rows: int = C.MAP_MIN_ROWS) -> pd.DataFrame:
+              min_rows: int = C.MAP_MIN_ROWS, windows: tuple[int, ...] | None = None) -> pd.DataFrame:
     """One row per well test with the median steady SCADA state around the test.
 
     MATCH is 'MATCHED', 'NO_RT_DATA' (no SCADA rows in the widest window) or
     'INSUFFICIENT_STEADY_DATA'. K = Q_test / X is filled for matched tests only.
+
+    `windows` overrides the half-widths tried in order. A dataset whose tests carry only a date
+    and no time of day passes a single wide window rather than trying a narrow one first.
     """
+    tried = tuple(windows) if windows else (win_h, wide_h)
     rows = []
     by_well = {w: g for w, g in d.groupby("WELL_NAME", sort=False)}
     for _, r in t.iterrows():
         g = by_well.get(r["WELL_NAME"])
         rec = r.to_dict()
         if g is None or g.empty:
-            rec.update(window_h=wide_h, n_window=0, n_steady=0, nearest_rt_h=np.nan, MATCH="NO_RT_DATA")
+            rec.update(window_h=tried[-1], n_window=0, n_steady=0, nearest_rt_h=np.nan, MATCH="NO_RT_DATA")
             rows.append(rec)
             continue
         ts = g["TIME_STAMP"]
         w = s = g.iloc[0:0]
-        win = win_h
-        for win in (win_h, wide_h):
+        win = tried[0]
+        for win in tried:
             w = g[(ts >= r["TEST_TS"] - pd.Timedelta(hours=win)) & (ts <= r["TEST_TS"] + pd.Timedelta(hours=win))]
             s = w[w["steady"]]
             if len(s) >= min_rows:

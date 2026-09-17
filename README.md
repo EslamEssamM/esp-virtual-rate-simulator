@@ -90,6 +90,39 @@ Notes:
 - `requirements-dev.txt` (Playwright, for screenshots) is not installed on the cloud.
 - The app holds no secrets and needs no environment variables.
 
+## Datasets
+
+The app serves more than one field. `core/datasets.py` holds a registry; each entry supplies the
+loaders and the few facts that differ, and everything downstream is the same code.
+
+| Dataset | Wells | SCADA | Electrical basis |
+|---|---|---|---|
+| GC31 (Kuwait) | 4 loaded, 3 analysed | 30-min, Apr-2024 to Jul-2026, 69,965 rows | Voltage tag switches between drive side (LV) and motor side (MV) |
+| Meleiha (Egypt) | 5 loaded, 5 analysed | 1-10 min, Oct-2018 to Nov-2021, 402,718 rows | Both voltage tags are drive-side; the step-up ratio is absorbed into K |
+
+The sidebar selects the dataset and every cache is keyed on it, so the two never share a number.
+Adding a field means adding a loader module and one registry entry.
+
+### Meleiha specifics
+
+- `VOLTAGE := VOLTAGE_VSD_OUT` (drive side) and `AMPERAGE := AMPERAGE_MOTOR` (motor side); the
+  originals are kept. The transformer ratio (0.11-0.16) is **not** applied: a constant ratio
+  cancels between calibration and prediction, exactly as on GC31's SA-0162. K therefore carries
+  the ratio, so its magnitude is not comparable with a motor-side K and no implied efficiency is
+  shown. Power factor was never logged; the previous analyst assumed 0.8.
+- **Regimes.** A well whose workbook records the transformer ratio or the stage count changing
+  runs in more than one electrical regime and is calibrated per regime. The boundary is the
+  largest step in the daily median voltage/frequency ratio. M-80 ST splits in May-2019.
+- The file's own flags are folded into the app's rules rather than replacing them:
+  `pump_off OR NOT PUMP_RUNNING`, and `usable AND NOT GAUGE_FROZEN`.
+- Temperatures are already degF, so the degC detection rule is off for this field.
+- Well tests carry a date but no time, so the mapper uses the +/-24 h window directly.
+- No laboratory bubble point exists, so the free-gas indicator is unavailable. Bo is not measured
+  per test, so B_liq uses an assumed constant Bo = 1.05 with a visible caveat.
+- The previous analyst's workbook series can be overlaid on the Overview chart. It is never used
+  for calibration or MAPE: their factor is recomputed at every row against the allocated rate, so
+  it cannot be validated against it.
+
 ## Well scope
 
 `core/config.py` holds the whole well scope:

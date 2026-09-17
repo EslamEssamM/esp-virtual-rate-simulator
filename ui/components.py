@@ -21,10 +21,26 @@ BASE_NOTES = [
 ]
 
 
-def dataset_notes_list() -> list[str]:
-    """Known dataset facts, with one line per excluded well generated from the config."""
+def dataset_notes_list(res=None) -> list[str]:
+    """Known dataset facts, with one line per excluded well taken from the pipeline."""
+    if res is not None and getattr(res, "dataset", None) is not None and res.dataset.key != "GC31":
+        ds = res.dataset
+        notes = [f"{r.WELL_NAME} is loaded but excluded from the analysis: {r.reason}"
+                 for r in res.excluded.itertuples()] if len(res.excluded) else []
+        notes.append(ds.basis.note)
+        if ds.wc_correction_note:
+            notes.append(ds.wc_correction_note)
+        if not ds.has_bubble_point:
+            notes.append("No laboratory bubble point exists for this field, so the free-gas indicator is unavailable.")
+        return notes
     notes = [f"{w} is loaded but excluded from the analysis: {reason}" for w, reason in C.EXCLUDED_WELLS.items()]
     return notes + BASE_NOTES
+
+
+def dataset_notes_for(res):
+    with st.expander("Known dataset facts", icon=":material/info:"):
+        for n in dataset_notes_list(res):
+            st.markdown(f"- {n}")
 
 
 def dataset_notes(expanded: bool = False):
@@ -33,16 +49,17 @@ def dataset_notes(expanded: bool = False):
             st.markdown(f"- {n}")
 
 
-def excluded_banner(well: str, where: str = "analysis"):
+def excluded_banner(well: str, where: str = "analysis", reason: str | None = None):
     """Banner shown wherever an excluded well would otherwise carry numbers."""
-    st.warning(f"**{well} is excluded from {where}.** {C.well_exclusion_reason(well)}", icon=":material/block:")
+    reason = C.well_exclusion_reason(well) if reason is None else reason
+    st.warning(f"**{well} is excluded from {where}.** {reason}", icon=":material/block:")
 
 
-def excluded_notice(wells, where: str = "analysis") -> bool:
+def excluded_notice(wells, where: str = "analysis", reasons: dict | None = None) -> bool:
     """Banner for each selected excluded well. Returns True when at least one was shown."""
     shown = False
     for w in wells:
-        excluded_banner(w, where)
+        excluded_banner(w, where, (reasons or {}).get(w))
         shown = True
     return shown
 
@@ -64,8 +81,15 @@ def well_header(well: str, run: dict, extra: str | None = None):
             st.caption(extra)
 
 
-def intake_tile(stats: dict, gas: pd.Series | None):
+def intake_tile(stats: dict, gas: pd.Series | None, has_bubble_point: bool = True):
     """Intake vs bubble point, coloured by how far below it the pump is running."""
+    if not has_bubble_point or not pd.notna(stats.get("med_PIP_minus_Pb")):
+        st.metric(":gray-badge[no PVT] Intake - Pb", "Pb not available",
+                  f"PIP median {stats['med_PIP']:,.0f} psi" if pd.notna(stats.get("med_PIP")) else None,
+                  delta_color="off", delta_arrow="off", border=True,
+                  help="No laboratory bubble point exists for this field, so the free-gas indicator "
+                       "cannot be computed. Intake pressure is still charted on the Data quality page.")
+        return
     dpb = stats.get("med_PIP_minus_Pb")
     sev = gas_severity(dpb)
     below = stats.get("pct_below_pb")
@@ -117,7 +141,7 @@ def mape_tile(mape_rows: pd.DataFrame | None, well: str, mode: str, wc_correctio
 
 def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_mode: str, run_label_now: str,
               wc_correction: bool = False, gas: pd.Series | None = None,
-              mape_rows: pd.DataFrame | None = None, well: str = ""):
+              mape_rows: pd.DataFrame | None = None, well: str = "", has_bubble_point: bool = True):
     """KPI tiles for one well over the selected period."""
     med = stats["rate_median"]
     last_rate = stats["rate_last"]
@@ -125,6 +149,8 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
     k_label = ("K_dh interpolated" if k_mode == "interp" else "K_dh single") if wc_correction \
         else ("K interpolated" if k_mode == "interp" else "K single")
     k_value = stats["K_dh"] if wc_correction else stats["K"]
+    if cal_row is not None and isinstance(cal_row, pd.DataFrame):
+        cal_row = cal_row.iloc[-1] if len(cal_row) else None
     n = 9 if wc_correction else 8
     # Four tiles per row: any more and the labels ellipsize on a laptop screen. Every row is laid
     # out as four columns even when the last one is short, so a tile is the same width everywhere.
@@ -165,7 +191,7 @@ def kpi_tiles(stats: dict, cal_row: pd.Series | None, last: pd.Series | None, k_
         st.metric("PHI (last)", fmt_num(phi, 3), (f"{(phi - 1) * 100:+.1f} % vs calib." if pd.notna(phi) else None),
                   delta_color="off", border=True, help=PHI_HELP)
     with c[7]:
-        intake_tile(stats, gas)
+        intake_tile(stats, gas, has_bubble_point)
     if wc_correction:
         with c[8]:
             eff = stats.get("wc_effect_pct")

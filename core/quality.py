@@ -13,7 +13,7 @@ from . import config as C
 
 FLAG_COLUMNS = [
     "missing_elec", "missing_press", "pump_off", "bad_dP", "bad_press_range",
-    "bad_freq", "transient", "temp_unit_c",
+    "bad_freq", "transient", "temp_unit_c", "gauge_frozen",
 ]
 EXCLUSION_FLAGS = ["missing_elec", "missing_press", "pump_off", "bad_dP", "bad_press_range", "bad_freq"]
 
@@ -37,9 +37,9 @@ def add_quality_flags(d: pd.DataFrame) -> pd.DataFrame:
     d["missing_press"] = d["PIP"].isna() | d["PDP"].isna()
     d["pump_off"] = (V < C.PUMP_OFF_V) | (I < C.PUMP_OFF_I) | (F == 0)
     d["bad_dP"] = ~(dP > C.MIN_DP)                       # also true when dP is NaN
-    d["bad_press_range"] = (
-        ~d["PIP"].between(*C.PIP_RANGE) | ~d["PDP"].between(*C.PDP_RANGE) | (d["WHP"] > d["PDP"])
-    )
+    # PDP has no upper/lower gate: discharge pressure varies too much between fields to bound
+    # sensibly, and a bad reading is caught by the dP rule or by PIP instead.
+    d["bad_press_range"] = ~d["PIP"].between(*C.PIP_RANGE) | (d["WHP"] > d["PDP"])
     d["bad_freq"] = F.notna() & (F != 0) & ~F.between(*C.FREQ_RANGE)
 
     g_well = d.groupby("WELL_NAME", sort=False)
@@ -60,6 +60,7 @@ def add_quality_flags(d: pd.DataFrame) -> pd.DataFrame:
     d["X"] = np.sqrt(3) * V * I / dP
     d["V_BASIS"] = np.where(V < C.LV_MV_SPLIT_V, "LV", "MV")
 
+    d["gauge_frozen"] = False        # datasets that ship their own flag overwrite this
     d["usable"] = ~d[EXCLUSION_FLAGS].any(axis=1)
     d["steady"] = d["usable"] & ~d["transient"]
 
@@ -92,6 +93,8 @@ def add_elec_basis_flag(d: pd.DataFrame, cal: pd.DataFrame) -> pd.DataFrame:
     ok = pd.Series(False, index=d.index)
     for _, r in cal.iterrows():
         m = d["WELL_NAME"] == r["WELL_NAME"]
+        if "regime" in d.columns and "regime" in cal.columns:
+            m &= d["regime"] == r["regime"]
         ok.loc[m] = d.loc[m, "VOLTAGE"].between(r["V_lo"], r["V_hi"])
     d["elec_basis_ok"] = ok
     return d
@@ -119,6 +122,8 @@ def exclusion_reason(d: pd.DataFrame) -> pd.Series:
     reason[d["transient"] & d["usable"]] = "transient"
     for f in reversed(EXCLUSION_FLAGS):        # earlier flags win
         reason[d[f]] = f
+    if "gauge_frozen" in d.columns:
+        reason[d["gauge_frozen"].astype(bool)] = "gauge_frozen"
     if "elec_basis_ok" in d.columns:
         reason[(reason == "steady") & ~d["elec_basis_ok"]] = "uncalibrated_basis"
     return reason

@@ -121,14 +121,15 @@ def free_gas_indicator(lab: pd.Series | dict, pip, wc, bo, bw: float = C.BW,
     return pip - pb, free, gvf
 
 
-def add_pvt_columns(d: pd.DataFrame, test_pvt: pd.DataFrame, lab: pd.DataFrame,
+def add_pvt_columns(d: pd.DataFrame, test_pvt: pd.DataFrame, lab: pd.DataFrame | None = None,
                     wells: list[str] | None = None) -> pd.DataFrame:
     """Add WC_FRAC, BO, B_LIQ, Pb, PIP_minus_Pb, below_pb, free_gas_scf_stb and gvf_est to the
     SCADA frame. Every row is kept; wells without PVT get NaN."""
     d = d.copy()
     for c in ["WC_FRAC", "BO", "B_LIQ", "RS_TEST", "Pb", "PIP_minus_Pb", "free_gas_scf_stb", "gvf_est"]:
         d[c] = np.nan
-    lab_by_well = lab.set_index("WELL_NAME")
+    lab = pd.DataFrame(columns=["WELL_NAME", *LAB_COLUMNS]) if lab is None else lab
+    lab_by_well = lab.set_index("WELL_NAME") if len(lab) else pd.DataFrame()
     todo = d["WELL_NAME"].unique() if wells is None else [w for w in wells if w in set(d["WELL_NAME"])]
     for w in todo:
         m = d["WELL_NAME"] == w
@@ -136,7 +137,7 @@ def add_pvt_columns(d: pd.DataFrame, test_pvt: pd.DataFrame, lab: pd.DataFrame,
         p = interpolate_pvt(test_pvt, w, g["TIME_STAMP"])
         for c in PVT_COLS:
             d.loc[m, c] = p[c].to_numpy()
-        if w in lab_by_well.index:
+        if len(lab_by_well) and w in lab_by_well.index:
             lr = lab_by_well.loc[w]
             dpb, free, gvf = free_gas_indicator(lr, g["PIP"].to_numpy(), p["WC_FRAC"].to_numpy(), p["BO"].to_numpy())
             d.loc[m, "Pb"] = float(lr["PB"])
@@ -152,7 +153,8 @@ def gas_summary(d: pd.DataFrame, lab: pd.DataFrame, mask: str = "rate_steady") -
     % of rows below the bubble point, and the estimated GVF median and p95."""
     rows = []
     sel = d[d[mask]] if mask in d.columns else d
-    lab_by_well = lab.set_index("WELL_NAME")
+    lab = pd.DataFrame(columns=["WELL_NAME", *LAB_COLUMNS]) if lab is None else lab
+    lab_by_well = lab.set_index("WELL_NAME") if len(lab) else pd.DataFrame()
     for w, g in sel.groupby("WELL_NAME"):
         g = g.dropna(subset=["PIP_minus_Pb"])
         if g.empty:

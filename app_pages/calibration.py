@@ -6,23 +6,25 @@ from core.validation import whatif_k, whatif_mape
 from ui import data as D
 from ui.charts import k_chart, validation_chart, watercut_chart, whatif_chart
 from ui.components import excluded_notice
-from ui.sidebar import filters
+from ui.sidebar import filters, wkey
 from ui.theme import BASE_METHODS, METHOD_LABELS, WC_ALL_METHODS
 
 f = filters()
-res = D.get_results()
+res = D.get_results(f["dataset"])
 wells = list(f["wells_analysed"])
 mm = res.matched
-cal = res.cal.set_index("WELL_NAME")
+cal = res.cal
 
 WC = f["wc_correction"]
+DSET = res.dataset
 METHODS_SHOWN = WC_ALL_METHODS if WC else BASE_METHODS
 
 st.title("Calibration & validation", anchor=False)
 st.caption("K = Q_test / X at each well test that has steady SCADA rows within +/-12 h (widened to +/-24 h when needed). "
            "Suspect tests (robust z > 3.5 within the well) are shown but excluded from K.")
 
-excluded_notice(f["wells_excluded"], "calibration and validation")
+excluded_notice(f["wells_excluded"], "calibration and validation",
+                dict(zip(res.excluded["WELL_NAME"], res.excluded["reason"])) if len(res.excluded) else {})
 if not wells:
     st.warning("Select at least one analysed well in the sidebar.", icon=":material/filter_alt:")
     st.stop()
@@ -35,11 +37,15 @@ ct["V window"] = ct["V_lo"].round(0).astype(int).astype(str) + " - " + ct["V_hi"
 ct["first_test"] = ct["first_test"].dt.strftime("%Y-%m-%d")
 ct["last_test"] = ct["last_test"].dt.strftime("%Y-%m-%d")
 st.dataframe(
-    ct[["WELL_NAME", "K_single", "K_cv_pct"] + (["K_dh_single", "K_dh_cv_pct"] if WC else [])
-       + ["tests", "first_test", "last_test", "V_BASIS", "V window", "implied_eff"]],
+    ct[["WELL_NAME"] + (["regime"] if ct["regime"].nunique() > 1 or (ct.groupby("WELL_NAME")["regime"].size() > 1).any() else [])
+       + ["K_single", "K_cv_pct"] + (["K_dh_single", "K_dh_cv_pct"] if WC else [])
+       + ["tests", "first_test", "last_test", "V_BASIS", "V window"]
+       + (["implied_eff"] if DSET.key == "GC31" else [])],
     hide_index=True,
     column_config={
         "WELL_NAME": st.column_config.TextColumn("Well", pinned=True),
+        "regime": st.column_config.NumberColumn("Regime", help="Electrical regime: a well whose transformer ratio or "
+                                                              "stage count changed mid-life is calibrated per regime."),
         "K_single": st.column_config.NumberColumn("K single", format="%.2f", help="Median K of the non-suspect matched tests."),
         "K_cv_pct": st.column_config.NumberColumn("K spread (CV %)", format="%.1f"),
         "K_dh_single": st.column_config.NumberColumn("K_dh single", format="%.2f",
@@ -55,8 +61,20 @@ st.dataframe(
                                                      help=f"K x 1000 / {EFF_DENOM:.0f}; the product PF x eta_m x eta_p implied by K."),
     },
 )
-st.caption(":material/warning: Implied overall efficiency is 0.17-0.28 on the MV wells, below the 0.5-0.7 expected for "
-           "PF x eta_m x eta_p. This points to a voltage-tag basis issue; it is reported, not corrected.")
+if DSET.key == "GC31":
+    st.caption(":material/warning: Implied overall efficiency is 0.17-0.28 on the MV wells, below the 0.5-0.7 expected for "
+               "PF x eta_m x eta_p. This points to a voltage-tag basis issue; it is reported, not corrected.")
+else:
+    st.caption(f":material/bolt: **{DSET.basis.note}** K therefore also carries the step-up ratio (0.11-0.16 here), so "
+               "its magnitude is not comparable with a motor-side K and no implied efficiency is shown. The method "
+               "still validates, because a constant ratio cancels between calibration and prediction; where the ratio "
+               "changed, the well is split into regimes and calibrated separately.")
+if len(res.regimes) and (res.regimes.groupby("WELL_NAME").size() > 1).any():
+    multi = res.regimes[res.regimes.groupby("WELL_NAME")["WELL_NAME"].transform("size") > 1]
+    st.caption(":material/call_split: Regime boundaries: "
+               + "; ".join(f"{w} splits at {pd.Timestamp(g['start'].iloc[-1]):%d %b %Y}"
+                           for w, g in multi.groupby("WELL_NAME"))
+               + ". The split is the largest step in the daily median voltage/frequency ratio.")
 
 # ---------------------------------------------------------------- matched tests
 st.subheader("Matched well tests", anchor=False)
@@ -106,8 +124,32 @@ st.subheader("K over time", anchor=False)
 cols = st.columns(2)
 for i, w in enumerate(wells):
     with cols[i % 2]:
-        st.plotly_chart(k_chart(w, mm[mm["WELL_NAME"] == w], cal.loc[w] if w in cal.index else None, f["t0"], f["t1"]),
+        st.plotly_chart(k_chart(w, mm[mm["WELL_NAME"] == w], D.cal_rows(cal, w), f["t0"], f["t1"]),
                         key=f"k_{w}", config=dict(displaylogo=False))
+
+# ---------------------------------------------------------------- static data disagreements
+if "stages_disagree" in res.esp.columns:
+    bad = res.esp[res.esp["stages_disagree"] | res.esp["depth_disagree"]]
+    if len(bad):
+        with st.expander(f":material/warning: Pump stages or depth disagree between sources "
+                         f"({len(bad)} of {len(res.esp)} wells)", icon=":material/warning:"):
+            st.caption("The operator history log and the analyst workbook record different values. Both are shown; "
+                       "neither is picked silently. Resolve with the operator before using pump curves.")
+            st.dataframe(res.esp[["WELL_NAME", "PUMP_MODEL", "STAGES_hist", "STAGES_wb", "stages_disagree",
+                                  "PUMP_DEPTH_FT_hist", "PUMP_DEPTH_FT_wb", "depth_disagree",
+                                  "XFMR_RATIO_wb_raw", "RS_SCF_STB", "OIL_VISC_CP", "RES_TEMP_F"]],
+                         hide_index=True, column_config={
+                             "WELL_NAME": "Well", "PUMP_MODEL": "Pump",
+                             "STAGES_hist": st.column_config.NumberColumn("Stages (log)", format="%.0f"),
+                             "STAGES_wb": st.column_config.NumberColumn("Stages (workbook)", format="%.0f"),
+                             "stages_disagree": st.column_config.CheckboxColumn("Stages differ"),
+                             "PUMP_DEPTH_FT_hist": st.column_config.NumberColumn("Depth ft (log)", format="%.0f"),
+                             "PUMP_DEPTH_FT_wb": st.column_config.NumberColumn("Depth ft (workbook)", format="%.0f"),
+                             "depth_disagree": st.column_config.CheckboxColumn("Depth differs"),
+                             "XFMR_RATIO_wb_raw": "Transformer ratio",
+                             "RS_SCF_STB": st.column_config.NumberColumn("Rs scf/stb", format="%.0f"),
+                             "OIL_VISC_CP": st.column_config.NumberColumn("Oil visc. cp", format="%.2f"),
+                             "RES_TEMP_F": st.column_config.NumberColumn("Res. T degF", format="%.0f")})
 
 # ---------------------------------------------------------------- water cut and B_liq
 st.subheader("Water cut and B_liq", anchor=False)
@@ -119,7 +161,7 @@ wcols = st.columns(2)
 for i, w in enumerate(wells):
     with wcols[i % 2]:
         dly = res.daily[res.daily["WELL_NAME"] == w]
-        st.plotly_chart(watercut_chart(w, D.pvt_series(w), dly), key=f"wc_{w}", config=dict(displaylogo=False))
+        st.plotly_chart(watercut_chart(w, D.pvt_series(f["dataset"], w), dly), key=f"wc_{w}", config=dict(displaylogo=False))
 
 # ---------------------------------------------------------------- validation
 st.subheader("Validation against well tests", anchor=False)
@@ -198,8 +240,9 @@ st.caption("Slide K away from the calibrated value to see how the predicted rate
            "Nothing is saved; the sidebar K mode is unaffected.")
 wcols = st.columns([1, 2])
 with wcols[0]:
-    w = st.selectbox("Well", wells, key="whatif_well")
-    k_ref = float(cal.loc[w, "K_single"]) if w in cal.index else 1.0
+    w = st.selectbox("Well", wells, key=wkey("whatif_well", f["dataset"]))
+    _cr = D.cal_row(cal, w)
+    k_ref = float(_cr["K_single"]) if _cr is not None else 1.0
     k_new = st.slider("K", min_value=round(k_ref * 0.5, 2), max_value=round(k_ref * 1.5, 2), value=round(k_ref, 2),
                       step=round(max(k_ref / 200, 0.01), 2), key=f"whatif_k_{w}", help=f"Calibrated K single = {k_ref:.2f}")
     t = whatif_k(mm, w, k_new)
@@ -219,8 +262,8 @@ with wcols[0]:
         "Q_whatif": st.column_config.NumberColumn("Q what-if", format="%.0f"),
         "APE_whatif": st.column_config.NumberColumn("APE %", format="%.1f")})
 with wcols[1]:
-    series = D.rate_series(w, f["start"], f["end"], "D" if f["freq"] == "30min" else f["freq"], True)
-    tests_w = D.tests_in_range(w, f["start"], f["end"])
+    series = D.rate_series(f["dataset"], w, f["start"], f["end"], "D" if f["freq"] == "30min" else f["freq"], True)
+    tests_w = D.tests_in_range(f["dataset"], w, f["start"], f["end"])
     st.plotly_chart(whatif_chart(w, series, k_ref, k_new, f["freq"], tests=tests_w, whatif_at_tests=t),
                     key="whatif_chart", config=dict(displaylogo=False))
     st.caption("Filled diamonds are the measured tests; open diamonds are what the what-if K predicts at the same SCADA state. "

@@ -4,9 +4,12 @@ import streamlit as st
 
 from core import config as C
 from ui import data as D
+from ui.sidebar import filters, wkey
 from ui.theme import METHOD_LABELS
 
-res = D.get_results()
+f = filters()
+ds = D.get_results(f["dataset"]).dataset
+res = D.get_results(f["dataset"])
 cal = res.cal.set_index("WELL_NAME")
 
 st.title("Methodology", anchor=False)
@@ -65,12 +68,16 @@ m = res.meta
 st.markdown(f"""
 | File | Used for | This dataset |
 |---|---|---|
-| `{C.RT_FILE.name}` (sheet `{C.RT_SHEET}`) | 30-min SCADA: WHP, PIP, PDP, MT, INTAKE_TEMP, FREQUENCY, VOLTAGE, AMPERAGE | {m['n_rows']:,} rows loaded, {m['n_rows_analysed']:,} analysed; {pd.Timestamp(m['rt_start']):%d %b %Y} to {pd.Timestamp(m['rt_end']):%d %b %Y} |
-| `{C.WT_FILE.name}` | Well tests: liquid rate, PIP/PDP/WHP at test, frequency | {m['n_tests']} tests loaded, {m['n_tests_analysed']} on analysed wells |
-| `{C.ESP_MASTER_FILE.name}` | Pump run metadata: manufacturer, model, stages, depth, days from installation | run boundaries drawn on the charts |
+| Real-time SCADA | PIP, PDP, temperatures, frequency, voltage, current | {m['n_rows']:,} rows loaded, {m['n_rows_analysed']:,} analysed; {pd.Timestamp(m['rt_start']):%d %b %Y} to {pd.Timestamp(m['rt_end']):%d %b %Y} |
+| Well tests | Liquid rate, and the pressures and frequency recorded at the test | {m['n_tests']} tests loaded, {m['n_tests_analysed']} on analysed wells |
+| Static / pump metadata | Pump model, stages, depth and the PVT the field has | {len(res.esp):,} rows |
 
-Files are read once, filtered to the 4 wells, timestamps parsed, non-numeric placeholders (`DATA_UNRECORDED`, `MISSING_HARDWARE_SPEC`) coerced to NaN.
-The flagged SCADA frame is cached as parquet in `cache/`; the source files are never modified.
+Source files: {", ".join(f"`{{n}}`" for n in ds.source_files)}.
+
+Files are read once, filtered to this field's wells, timestamps parsed and non-numeric placeholders coerced to NaN.
+The flagged frame is cached as parquet in `cache/`, keyed on the dataset; the source files are never modified.
+
+**Electrical basis.** {ds.basis.note}
 """)
 
 # ------------------------------------------------------------------ 3. flags
@@ -84,7 +91,7 @@ Every SCADA row is kept and receives boolean flags. Only rows that pass all of t
 | `missing_press` | PIP or PDP null |
 | `pump_off` | VOLTAGE < {C.PUMP_OFF_V:.0f} V or AMPERAGE < {C.PUMP_OFF_I:.0f} A or FREQUENCY = 0 |
 | `bad_dP` | PDP - PIP <= {C.MIN_DP:.0f} psi (pump not developing head / gauge fault) |
-| `bad_press_range` | PIP outside {C.PIP_RANGE[0]:.0f}-{C.PIP_RANGE[1]:.0f} psi, PDP outside {C.PDP_RANGE[0]:.0f}-{C.PDP_RANGE[1]:.0f} psi, or WHP > PDP |
+| `bad_press_range` | PIP outside {C.PIP_RANGE[0]:.0f}-{C.PIP_RANGE[1]:.0f} psi, or WHP > PDP. PDP itself is not bounded: discharge pressure varies too much between fields, and a bad reading fails the dP rule instead |
 | `bad_freq` | FREQUENCY present, not 0, outside {C.FREQ_RANGE[0]:.0f}-{C.FREQ_RANGE[1]:.0f} Hz |
 | `transient` | rolling {C.TRANSIENT_WINDOW}-sample coefficient of variation of AMPERAGE or of dP > {C.TRANSIENT_CV * 100:.0f} % (per well, min {C.TRANSIENT_MIN_PERIODS} samples) |
 | `temp_unit_c` | MT < {C.TEMP_C_MT_MAX:.0f} or INTAKE_TEMP < {C.TEMP_C_IT_MAX:.0f}: logged in degC, converted to degF for display |
@@ -140,7 +147,7 @@ st.caption("Suspect tests: " + "; ".join(f"{r['WELL_NAME']} {r['TEST_TS']:%Y-%m-
 st.header("7. Worked example on one matched test", anchor=False)
 mm = res.matched
 labels = {f"{r['WELL_NAME']}  {r['TEST_TS']:%Y-%m-%d %H:%M}  ({r['Q_LIQ']:.0f} BFPD)": i for i, r in mm.iterrows()}
-pick = st.selectbox("Matched test", list(labels), key="method_example")
+pick = st.selectbox("Matched test", list(labels), key=wkey("method_example", f["dataset"]))
 r = mm.loc[labels[pick]]
 x = np.sqrt(3) * r["RT_VOLTAGE"] * r["RT_AMPERAGE"] / r["RT_dP"]
 e1, e2 = st.columns([1, 1])
@@ -218,9 +225,8 @@ with p1:
     st.latex(r"B_{liq} = WC \cdot B_w + (1-WC)\,B_o, \qquad B_w = 1.020")
     st.latex(r"K_{dh} = \frac{Q_{test}\, B_{liq,test}}{X_{test}}, \qquad Q_{M6}(t) = \frac{K_{dh}\, X(t)}{B_{liq}(t)}")
     st.markdown(f"""
-WC and Bo come per test from `{C.ESP_MASTER_FILE.name}` (`WATER_CUT_PCT`, `B_O_RBSTB`) and are interpolated in time
-between the well's tests, flat outside. B_liq computed this way reproduces the file's own `B_LIQ_RBSTB` to better
-than 0.001.
+WC and Bo come per test from the field's own data and are interpolated in time between the well's tests, flat
+outside. {"B_liq computed this way reproduces the file's own `B_LIQ_RBSTB` to better than 0.001." if ds.key == "GC31" else ds.wc_correction_note}
 
 A test is screened as suspect on **K**, never on K_dh: the outlier screen must not depend on the PVT correction.
 The sidebar toggle switches every rate, KPI, statistic and export between M1 and M6; it is **off** by default.
@@ -245,16 +251,18 @@ The sidebar toggle switches every rate, KPI, statistic and export between M1 and
 with p2:
     st.markdown("**B. Free gas at the pump intake**")
     st.markdown(f"""
-Per-well lab PVT from `{C.PVT_FILE.name}` (bubble point, solution GOR, API, reservoir temperature) against the
-measured intake pressure. P56 / P58 / P59 in the 81-parameter CSV are **not** used: they are dataset-wide
-placeholders, not per-well values.
+{"Per-well lab PVT (bubble point, solution GOR, API, reservoir temperature) against the measured intake pressure. P56 / P58 / P59 in the 81-parameter CSV are **not** used: they are dataset-wide placeholders, not per-well values." if ds.has_bubble_point else "This field has no laboratory bubble point, so the free-gas indicator cannot be computed here."}
 """)
     st.latex(r"R_s(p) = \min\!\big(R_s^{Standing}(p),\, R_{sb}\big)\cdot \frac{R_{sb}}{R_s^{Standing}(P_b)}")
     st.latex(r"B_g = \frac{0.0283\, Z\,(T+460)}{PIP}, \qquad GVF = \frac{(1-WC)\,V_g}{(1-WC)(V_g+B_o) + WC\,B_w}")
     st.markdown(f"Gas gravity is **{C.GAS_GRAVITY}** and Z is **{C.Z_FACTOR}**; neither is in any input file. "
                 f"The gas fraction is therefore {C.GVF_CAVEAT}: the sign and order of magnitude are solid, the exact "
                 "percentage is not.")
-    st.dataframe(res.gas[["WELL_NAME", "Pb", "PIP_median", "PIP_minus_Pb_median", "pct_rows_below_Pb",
+    if not len(res.gas):
+        st.info("No laboratory bubble point exists for this field, so the free-gas indicator is not computed.",
+                icon=":material/info:")
+    else:
+        st.dataframe(res.gas[["WELL_NAME", "Pb", "PIP_median", "PIP_minus_Pb_median", "pct_rows_below_Pb",
                           "gvf_median_pct", "gvf_p95_pct"]], hide_index=True, column_config={
         "WELL_NAME": "Well",
         "Pb": st.column_config.NumberColumn("Pb, psi", format="%.0f"),
@@ -263,11 +271,11 @@ placeholders, not per-well values.
         "pct_rows_below_Pb": st.column_config.NumberColumn("rows below Pb, %", format="%.0f"),
         "gvf_median_pct": st.column_config.NumberColumn("GVF median, %", format="%.0f"),
         "gvf_p95_pct": st.column_config.NumberColumn("GVF p95, %", format="%.0f")})
-    st.caption("This is the substantive finding. SA-0512H_T runs about 1,300 psi below its bubble point, so roughly "
-               "half the volume entering the pump is free gas. That reframes its low head factor, its PHI episodes "
-               "and the simultaneous current/PIP/PDP fluctuation as gas interference rather than instrument error. "
-               "The constant-K method still holds on that well only because the gas fraction has been stable; a "
-               "change in intake pressure or GOR will move K, and the PHI drift alarm is the right detector.")
+        st.caption("This is the substantive finding. SA-0512H_T runs about 1,300 psi below its bubble point, so roughly "
+                   "half the volume entering the pump is free gas. That reframes its low head factor, its PHI episodes "
+                   "and the simultaneous current/PIP/PDP fluctuation as gas interference rather than instrument error. "
+                   "The constant-K method still holds on that well only because the gas fraction has been stable; a "
+                   "change in intake pressure or GOR will move K, and the PHI drift alarm is the right detector.")
 
 # ------------------------------------------------------------------ 11. diagnosis
 st.header("11. Rule-based event detection (no diagnostic matrix)", anchor=False)

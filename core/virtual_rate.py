@@ -42,7 +42,7 @@ def compute_virtual_rate(d: pd.DataFrame, mm: pd.DataFrame, cal: pd.DataFrame,
     selection for charts and statistics. All rows are kept.
     """
     d = add_elec_basis_flag(d, cal)
-    if test_pvt is not None and lab_pvt is not None:
+    if test_pvt is not None and len(test_pvt):
         d = add_pvt_columns(d, test_pvt, lab_pvt)
     for c in ["K_single", "K_interp", "K_dh_single", "K_dh_interp", "PHI"]:
         d[c] = np.nan
@@ -50,6 +50,9 @@ def compute_virtual_rate(d: pd.DataFrame, mm: pd.DataFrame, cal: pd.DataFrame,
         w = r["WELL_NAME"]
         m = d["WELL_NAME"] == w
         mw = mm[mm["WELL_NAME"] == w]
+        if "regime" in d.columns and "regime" in cal.columns:
+            m = m & (d["regime"] == r["regime"])
+            mw = mw[mw["regime"] == r["regime"]]
         d.loc[m, "K_single"] = r["K_single"]
         d.loc[m, "K_interp"] = k_interp(d.loc[m, "TIME_STAMP"], mw)
         d.loc[m, "K_dh_single"] = r.get("K_dh_single", np.nan)
@@ -140,8 +143,9 @@ def daily_series(d: pd.DataFrame) -> pd.DataFrame:
             out[c] = rs.groupby(rs.index.floor("D"))[c].median().reindex(idx)
         if "Pb" in gi.columns and gi["Pb"].notna().any():
             out["Pb"] = float(gi["Pb"].dropna().iloc[0])
-        if "run" in gi.columns:
-            out["run"] = gi.groupby(day)["run"].agg(lambda x: x.mode().iloc[0]).reindex(idx)
+        for c in ("run", "regime"):
+            if c in gi.columns:
+                out[c] = gi.groupby(day)[c].agg(lambda x: x.mode().iloc[0]).reindex(idx)
         out["WELL_NAME"] = w
         out.index.name = "day"
         frames.append(out.reset_index())

@@ -25,7 +25,9 @@ def robust_z(k: pd.Series) -> pd.Series:
 def flag_suspect(m: pd.DataFrame, z_max: float = C.ROBUST_Z_MAX) -> pd.DataFrame:
     """Matched tests only, with `robust_z` and boolean `suspect` columns."""
     mm = m[m["MATCH"] == "MATCHED"].copy()
-    mm["robust_z"] = mm.groupby("WELL_NAME")["K"].transform(robust_z)
+    if "regime" not in mm.columns:
+        mm["regime"] = 1
+    mm["robust_z"] = mm.groupby(C.GROUP)["K"].transform(robust_z)
     mm["suspect"] = (mm["robust_z"] > z_max).fillna(False).astype(bool)
     # downhole-basis factor: K with the surface->pump volume change taken out of it. A test is
     # suspect on K, never on K_dh - the screen must not depend on the PVT correction.
@@ -43,17 +45,17 @@ def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) ->
     """
     good = mm[~mm["suspect"]]
     rows = []
-    for w, g in good.groupby("WELL_NAME"):
+    for (w, regime), g in good.groupby(C.GROUP):
         if len(g) < min_tests:
             continue
         k = g["K"]
         rows.append(dict(
-            WELL_NAME=w,
+            WELL_NAME=w, regime=int(regime),
             K_single=float(k.median()),
             K_min=float(k.min()), K_max=float(k.max()),
             K_cv_pct=float(k.std() / k.mean() * 100) if len(k) > 1 else np.nan,
             n_tests=int(len(g)),
-            n_suspect=int(mm[(mm["WELL_NAME"] == w) & mm["suspect"]].shape[0]),
+            n_suspect=int(mm[(mm["WELL_NAME"] == w) & (mm["regime"] == regime) & mm["suspect"]].shape[0]),
             first_test=g["TEST_TS"].min(), last_test=g["TEST_TS"].max(),
             V_lo=float(C.ELEC_BASIS_LO * g["RT_VOLTAGE"].min()),
             V_hi=float(C.ELEC_BASIS_HI * g["RT_VOLTAGE"].max()),
@@ -72,7 +74,10 @@ def calibration_table(mm: pd.DataFrame, min_tests: int = C.MIN_MATCHED_TESTS) ->
             PIP_base_median=float(g["RT_PIP"].median()),
             implied_eff=float(k.median() * 1000.0 / C.EFF_DENOM),
         ))
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        out = pd.DataFrame(columns=["WELL_NAME", "regime", "K_single"])
+    return out
 
 
 def pip_baselines(mm: pd.DataFrame, runs: pd.DataFrame | None, rt_start, rt_end) -> pd.DataFrame:

@@ -15,6 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from . import config as C
+
 METHODS = {
     "M1_LOO": "M1 single-K (leave-one-out)",
     "M6_LOO": "M6 water-cut corrected (leave-one-out)",
@@ -29,15 +31,19 @@ WC_METHODS = ["M6_LOO", "M6_WALK"]
 def validate(mm: pd.DataFrame, tests: pd.DataFrame) -> pd.DataFrame:
     """Per matched test: Q_TEST, the three predictions and their APE (%)."""
     res = []
-    for w, g in mm.groupby("WELL_NAME"):
+    if "regime" not in mm.columns:
+        mm = mm.assign(regime=1)
+    for (w, regime), g in mm.groupby(C.GROUP):
         g = g.sort_values("TEST_TS")
+        # the baseline carries the last well test forward whatever the electrical regime, so it
+        # looks at every test of the well; the K-based methods stay inside the regime
         all_tests = tests[tests["WELL_NAME"] == w].sort_values("TEST_TS")
         for i, r in g.iterrows():
             others = g[(g.index != i) & ~g["suspect"]]
             prev = g[(g["TEST_TS"] < r["TEST_TS"]) & ~g["suspect"]]
             prev_all = all_tests[all_tests["TEST_TS"] < r["TEST_TS"]]
-            out = dict(WELL_NAME=w, TEST_TS=r["TEST_TS"], Q_TEST=r["Q_LIQ"], X=r["RT_X"], K=r["K"],
-                       suspect=bool(r["suspect"]))
+            out = dict(WELL_NAME=w, regime=int(regime), TEST_TS=r["TEST_TS"], Q_TEST=r["Q_LIQ"],
+                       X=r["RT_X"], K=r["K"], suspect=bool(r["suspect"]))
             b = r.get("B_LIQ", np.nan)
             out["B_LIQ"] = b
             out["K_dh"] = r.get("K_dh", np.nan)
@@ -53,7 +59,7 @@ def validate(mm: pd.DataFrame, tests: pd.DataFrame) -> pd.DataFrame:
             res.append(out)
     v = pd.DataFrame(res)
     if v.empty:
-        cols = ["WELL_NAME", "TEST_TS", "Q_TEST", "X", "K", "K_dh", "B_LIQ", "suspect", "BASE_TEST_TS"]
+        cols = ["WELL_NAME", "regime", "TEST_TS", "Q_TEST", "X", "K", "K_dh", "B_LIQ", "suspect", "BASE_TEST_TS"]
         return pd.DataFrame(columns=cols + [f"{p}_{m}" for m in METHODS for p in ("Q", "APE")])
     for mth in METHODS:
         v["APE_" + mth] = (v["Q_" + mth] - v["Q_TEST"]).abs() / v["Q_TEST"] * 100
